@@ -170,7 +170,7 @@ export function inferDateFormat(dates: string[]): { fmt: DateFormat; ambiguous: 
 }
 
 /* ---------- punch extraction ---------- */
-interface RawPunch { id: string; date: string; time: number }
+interface RawPunch { id: string; date: string; time: number; block?: string }
 const SKIP_HEADER = /(total|hours?|hrs|late|tardy|under ?time|over ?time|\bot\b|duration|work ?time|sched|shift|plan|expected|required|break ?hrs|absent|night ?diff)/i;
 const nonEmpty = (r: Cell[]) => r.filter((c) => c.k !== "empty").length;
 
@@ -237,12 +237,17 @@ function matrixPunches(grid: Cell[][], raw: string[][], fmt: DateFormat): RawPun
     if (!body.length) continue;
     const idCol = pickIdCol(grid, body, new Set(dateCols.keys()));
     const out: RawPunch[] = [];
+    let lastId = "";
     for (const r of body) {
-      const id = idCol >= 0 ? cellId(grid[r]![idCol]) : "";
+      let id = idCol >= 0 ? cellId(grid[r]![idCol]) : "";
+      const named = idCol >= 0 && grid[r]![idCol]?.k !== "empty";
+      if (!id && !named) id = lastId; // continuation row of the same employee
+      if (id) lastId = id; else if (named) lastId = "";
+      const block = id ? undefined : `m${r}`;
       for (const [c, date] of dateCols) {
         const cell = grid[r]![c];
-        if (cell?.k === "times") cell.times.forEach((t) => out.push({ id, date, time: t }));
-        if (cell?.k === "datetime") cell.times.forEach((t) => out.push({ id, date: cell.date, time: t }));
+        if (cell?.k === "times") cell.times.forEach((t) => out.push({ id, date, time: t, block }));
+        if (cell?.k === "datetime") cell.times.forEach((t) => out.push({ id, date: cell.date, time: t, block }));
       }
     }
     return out;
@@ -276,31 +281,41 @@ function rowPunches(grid: Cell[][]): RawPunch[] {
 
   // section-style reports: "Employee ID: 001  Ana Cruz" on a row above the punches
   const sectionId = new Map<number, string>();
-  if (idCol < 0) {
-    let cur = "";
+  const blockOf = new Map<number, number>();
+  {
+    let cur = "", block = 0, prevData = false;
     for (let r = 0; r < grid.length; r++) {
       const row = grid[r]!;
-      if (!row.some((c) => c.k === "times" || c.k === "datetime")) {
+      const isData = data.includes(r);
+      if (!isData) {
         for (const c of row) {
           if (c.k !== "other") continue;
-          const m = c.text.match(/(?:id|no\.?|code|number|#)\s*[:#.]?\s*([A-Za-z]{0,4}-?\d[\w-]*)/i);
-          if (m) { cur = m[1]!; break; }
+          const m = c.text.match(/(?:\bid\b|\bno\.?|code|number|#|emp(?:loyee)?\.?)\s*[:#.]?\s*([A-Za-z]{0,4}-?\d[\w-]*)/i);
+          if (m) { cur = m[1]!; block++; break; }
         }
+        if (prevData && nonEmpty(row) > 0) block++;
       }
+      prevData = isData;
       sectionId.set(r, cur);
+      blockOf.set(r, block);
     }
   }
 
   const out: RawPunch[] = [];
+  let lastId = "", lastBlock = -1;
   for (const r of data) {
     const row = grid[r]!;
-    const id = idCol >= 0 ? cellId(row[idCol]) : sectionId.get(r) ?? "";
+    let id = idCol >= 0 ? cellId(row[idCol]) : "";
+    if (!id) id = idCol >= 0 && lastId && blockOf.get(r) === lastBlock ? lastId : sectionId.get(r) ?? "";
+    if (!id && idCol >= 0) id = lastId && blockOf.get(r) === lastBlock ? lastId : "";
+    if (id) { lastId = id; lastBlock = blockOf.get(r)!; }
+    const block = id ? undefined : `b${blockOf.get(r)}`;
     const dcell = dateCol >= 0 ? row[dateCol] : undefined;
     const rowDate = dcell?.k === "date" ? dcell.date : "";
     row.forEach((c, i) => {
       if (skip.has(i) || i === idCol) return;
-      if (c.k === "times") c.times.forEach((t) => out.push({ id, date: rowDate, time: t }));
-      if (c.k === "datetime") c.times.forEach((t) => out.push({ id, date: c.date, time: t }));
+      if (c.k === "times") c.times.forEach((t) => out.push({ id, date: rowDate, time: t, block }));
+      if (c.k === "datetime") c.times.forEach((t) => out.push({ id, date: c.date, time: t, block }));
     });
   }
   return out;
@@ -316,10 +331,11 @@ export function autoConvert(sheets: string[][][]): ConvertResult {
   const punches: RawPunch[] = [];
   const layouts = new Set<string>();
   grids.forEach((g, i) => {
+    const tag = (ps: RawPunch[]) => ps.map((p) => (p.block ? { ...p, block: `s${i}${p.block}` } : p));
     const mx = matrixPunches(g, sheets[i]!, fmt);
-    if (mx?.length) { punches.push(...mx); layouts.add("matrix"); return; }
+    if (mx?.length) { punches.push(...tag(mx)); layouts.add("matrix"); return; }
     const rp = rowPunches(g);
-    if (rp.length) { punches.push(...rp); layouts.add("rows"); }
+    if (rp.length) { punches.push(...tag(rp)); layouts.add("rows"); }
   });
   if (!punches.length) throw new NoPunchError();
   return { rows: groupPunches(punches, fmt), ambiguousDate: ambiguous, layout: [...layouts].join("+") };
@@ -331,7 +347,7 @@ function groupPunches(punches: RawPunch[], fmt: DateFormat): OutRow[] {
     const pd = parseDate(p.date, fmt);
     const date = pd ? formatDate(pd) : p.date;
     const sortKey = pd ? `${pd.y}${String(pd.m).padStart(2, "0")}${String(pd.d).padStart(2, "0")}` : `~${p.date}`;
-    const k = `${p.id}\u0000${date}`;
+    const k = `${p.id || `\u0001${p.block ?? ""}`}\u0000${date}`;
     let g = groups.get(k);
     if (!g) groups.set(k, (g = { id: p.id, date, sortKey, times: [] }));
     g.times.push(p.time);
@@ -360,14 +376,13 @@ export function validate(row: OutRow, all: OutRow[]): Issue[] {
   SLOTS.forEach((s, i) => {
     if (vals[i] && !/^\d{2}:\d{2}$/.test(vals[i]!)) issues.push({ level: "error", message: `Invalid time in ${s}` });
   });
-  if (row.extra.length) issues.push({ level: "error", message: `More than 4 punches: ${row.extra.join(", ")} not placed` });
   const filled = vals.filter(Boolean).length + row.extra.length;
-  if (filled % 2 === 1) issues.push({ level: "warning", message: "Odd number of punches" });
+  if (filled % 2 === 1) issues.push({ level: "error", message: "Incomplete punches: missing IN or OUT." });
+  if (row.extra.length) issues.push({ level: "warning", message: `More than 4 punches, please review (not placed: ${row.extra.join(", ")})` });
   for (const [a, b] of [[0, 1], [2, 3]] as const) {
     const i = parseTime(vals[a]!), o = parseTime(vals[b]!);
     if (i !== null && o !== null && o < i) issues.push({ level: "warning", message: `${SLOTS[b]} earlier than ${SLOTS[a]}` });
   }
-  if (row.dupes) issues.push({ level: "warning", message: `${row.dupes} duplicate punch(es) removed` });
   if (row.systemId && all.some((r) => r !== row && r.systemId === row.systemId && r.date === row.date))
     issues.push({ level: "warning", message: "Duplicate System ID + Date row" });
   return issues;
