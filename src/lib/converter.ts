@@ -170,7 +170,8 @@ export function inferDateFormat(dates: string[]): { fmt: DateFormat; ambiguous: 
 }
 
 /* ---------- punch extraction ---------- */
-interface RawPunch { id: string; date: string; time: number; block?: string | undefined }
+interface RawPunch { id: string; date: string; time: number; source: string; block?: string | undefined }
+interface ResolvedPunch extends Omit<RawPunch, "date"> { date: ParsedDate | null }
 const SKIP_HEADER = /(total|hours?|hrs|late|tardy|under ?time|over ?time|\bot\b|duration|work ?time|sched|shift|plan|expected|required|break ?hrs|absent|night ?diff)/i;
 const nonEmpty = (r: Cell[]) => r.filter((c) => c.k !== "empty").length;
 
@@ -201,36 +202,60 @@ function cellId(cell: Cell | undefined): string {
   return cell?.k === "other" ? extractId(cell.text) ?? "" : "";
 }
 
+/** Report periods are metadata, not punch dates. Match ISO first without truncating its year. */
+function reportPeriod(raw: string[][], header: number, fmt: DateFormat): { start: ParsedDate; end: ParsedDate | null } | null {
+  for (let r = header - 1; r >= 0; r--) {
+    const text = (raw[r] ?? []).join(" ");
+    const dates = (text.match(/\b\d{4}[-/.]\d{1,2}[-/.]\d{1,2}\b|\b\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}\b/g) ?? [])
+      .map((d) => parseDate(d, fmt)).filter((d): d is ParsedDate => d !== null);
+    const start = dates[0];
+    if (start) return { start, end: dates[1] ?? null };
+    const my = text.match(/\b([A-Za-z]{3,9})\.?\s+(\d{4})\b/);
+    if (my?.[1] && my[2] && monthIdx(my[1]))
+      return { start: { y: Number(my[2]), m: monthIdx(my[1]), d: 1 }, end: null };
+  }
+  return null;
+}
+
+function resolveDay(day: number, period: { start: ParsedDate; end: ParsedDate | null }): string {
+  if (period.end) {
+    const matches: ParsedDate[] = [];
+    const cursor = new Date(period.start.y, period.start.m - 1, period.start.d);
+    const end = new Date(period.end.y, period.end.m - 1, period.end.d);
+    // A day number must identify exactly one date in the reported range.
+    for (let n = 0; cursor <= end && n < 366; n++, cursor.setDate(cursor.getDate() + 1)) {
+      if (cursor.getDate() === day) matches.push({ y: cursor.getFullYear(), m: cursor.getMonth() + 1, d: day });
+    }
+    const match = matches.length === 1 ? matches[0] : undefined;
+    return match ? formatDate(match) : "";
+  }
+  return "";
+}
+
 /** Matrix: a header row with ≥2 date (or day-number) columns, punch times in the cells below. */
 function matrixPunches(grid: Cell[][], raw: string[][], fmt: DateFormat): RawPunch[] | null {
   for (let h = 0; h < grid.length; h++) {
     const row = grid[h]!;
     if (row.some((c) => c.k === "times" || c.k === "datetime")) continue;
+    // A stat-date range spread over several cells is metadata, not a matrix header.
+    if (/~|–|—|\bto\b/i.test((raw[h] ?? []).join(" ")) && row.filter((c) => c.k === "date").length >= 2) continue;
     const dateCols = new Map<number, string>();
     row.forEach((c, i) => { if (c.k === "date") dateCols.set(i, c.date); });
     if (dateCols.size < 2) {
       // day-number header (1..31) with the period taken from a date above it
-      const days = row.map((_, i) => String(raw[h]![i] ?? "").trim()).map((v) => (/^\d{1,2}$/.test(v) ? +v : 0));
+      const days = row.map((_, i) => String(raw[h]?.[i] ?? "").trim()).map((v) => {
+        const match = v.match(/^(\d{1,2})(?:\s*\(?\s*(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?\s*\)?)?$/i);
+        return match?.[1] ? Number(match[1]) : 0;
+      });
       const dayCols = days.map((d, i) => (d >= 1 && d <= 31 ? i : -1)).filter((i) => i >= 0);
-      if (dayCols.length < 5) continue;
-      let start: { y: number; m: number } | null = null;
-      for (let a = h; a >= 0 && !start; a--) {
-        for (const v of raw[a]!) {
-          const s = String(v ?? "");
-          const sd = splitDate(s.trim()) ?? (() => { const m = s.match(/\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}|\d{4}-\d{1,2}-\d{1,2}/); return m ? { date: m[0], rest: "" } : null; })();
-          const p = sd ? parseDate(sd.date, fmt) : null;
-          if (p) { start = { y: p.y, m: p.m }; break; }
-          const my = s.match(/\b([A-Za-z]{3,9})\.?\s+(\d{4})\b/);
-          if (my && monthIdx(my[1]!)) { start = { y: +my[2]!, m: monthIdx(my[1]!) }; break; }
-        }
-      }
-      if (!start) continue;
-      let { y, m } = start, prev = 0;
+      const period = reportPeriod(raw, h, fmt);
+      if (dayCols.length < 2 || (!period && dayCols.length < 5)) continue;
+      let y = period?.start.y ?? 0, m = period?.start.m ?? 0, prev = 0;
       for (const c of dayCols) {
-        const d = days[c]!;
+        const d = days[c] ?? 0;
         if (d < prev) { m++; if (m > 12) { m = 1; y++; } }
         prev = d;
-        dateCols.set(c, `${y}-${m}-${d}`);
+        dateCols.set(c, period?.end ? resolveDay(d, period) : period ? `${y}-${m}-${d}` : "");
       }
     }
     const body: number[] = [];
@@ -249,8 +274,8 @@ function matrixPunches(grid: Cell[][], raw: string[][], fmt: DateFormat): RawPun
       const block = id ? undefined : `m${r}`;
       for (const [c, date] of dateCols) {
         const cell = grid[r]![c];
-        if (cell?.k === "times") cell.times.forEach((t) => out.push({ id, date, time: t, block }));
-        if (cell?.k === "datetime") cell.times.forEach((t) => out.push({ id, date: cell.date, time: t, block }));
+        if (cell?.k === "times" || cell?.k === "datetime")
+          cell.times.forEach((t) => out.push({ id, date, time: t, block, source: `r${r}c${c}` }));
       }
     }
     return out;
@@ -317,8 +342,8 @@ function rowPunches(grid: Cell[][]): RawPunch[] {
     const rowDate = dcell?.k === "date" ? dcell.date : "";
     row.forEach((c, i) => {
       if (skip.has(i) || i === idCol) return;
-      if (c.k === "times") c.times.forEach((t) => out.push({ id, date: rowDate, time: t, block }));
-      if (c.k === "datetime") c.times.forEach((t) => out.push({ id, date: c.date, time: t, block }));
+      if (c.k === "times") c.times.forEach((t) => out.push({ id, date: rowDate, time: t, block, source: `r${r}c${i}` }));
+      if (c.k === "datetime") c.times.forEach((t) => out.push({ id, date: c.date, time: t, block, source: `r${r}c${i}` }));
     });
   }
   return out;
@@ -334,23 +359,25 @@ export function autoConvert(sheets: string[][][]): ConvertResult {
   const punches: RawPunch[] = [];
   const layouts = new Set<string>();
   grids.forEach((g, i) => {
-    const tag = (ps: RawPunch[]) => ps.map((p) => (p.block ? { ...p, block: `s${i}${p.block}` } : p));
+    const tag = (ps: RawPunch[]) => ps.map((p) => ({ ...p, source: `s${i}${p.source}`, block: p.block ? `s${i}${p.block}` : undefined }));
     const mx = matrixPunches(g, sheets[i]!, fmt);
     if (mx?.length) { punches.push(...tag(mx)); layouts.add("matrix"); return; }
     const rp = rowPunches(g);
     if (rp.length) { punches.push(...tag(rp)); layouts.add("rows"); }
   });
   if (!punches.length) throw new NoPunchError();
-  return { rows: groupPunches(punches, fmt), ambiguousDate: ambiguous, layout: [...layouts].join("+") };
+  const resolved: ResolvedPunch[] = punches.map((p) => ({ ...p, date: parseDate(p.date, fmt) }));
+  return { rows: groupPunches(resolved), ambiguousDate: ambiguous, layout: [...layouts].join("+") };
 }
 
-function groupPunches(punches: RawPunch[], fmt: DateFormat): OutRow[] {
+function groupPunches(punches: ResolvedPunch[]): OutRow[] {
   const groups = new Map<string, { id: string; date: string; sortKey: string; times: number[] }>();
   for (const p of punches) {
-    const pd = parseDate(p.date, fmt);
-    const date = pd ? formatDate(pd) : p.date;
-    const sortKey = pd ? `${pd.y}${String(pd.m).padStart(2, "0")}${String(pd.d).padStart(2, "0")}` : `~${p.date}`;
-    const k = `${p.id || `\u0001${p.block ?? ""}`}\u0000${date}`;
+    const pd = p.date;
+    const date = pd ? formatDate(pd) : "";
+    const sortKey = pd ? `${pd.y}${String(pd.m).padStart(2, "0")}${String(pd.d).padStart(2, "0")}` : `~${p.source}`;
+    // Without a resolved date, only punches from the very same source cell may share a row.
+    const k = JSON.stringify([p.id || `\u0001${p.block ?? ""}`, pd ? date : `unresolved:${p.source}`]);
     let g = groups.get(k);
     if (!g) groups.set(k, (g = { id: p.id, date, sortKey, times: [] }));
     g.times.push(p.time);
@@ -371,10 +398,10 @@ function groupPunches(punches: RawPunch[], fmt: DateFormat): OutRow[] {
 
 /* ---------- validation ---------- */
 export function validate(row: OutRow, all: OutRow[]): Issue[] {
+  if (!/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(row.date) || !parseDate(row.date, "MM/DD/YYYY"))
+    return [{ level: "error", message: "Missing date" }];
   const issues: Issue[] = [];
   if (!row.systemId.trim()) issues.push({ level: "error", message: "Missing System ID" });
-  if (!/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(row.date) || !parseDate(row.date, "MM/DD/YYYY"))
-    issues.push({ level: "error", message: "Invalid date" });
   const vals: string[] = SLOTS.map((s) => row[s].trim());
   SLOTS.forEach((s, i) => {
     if (vals[i] && !/^\d{2}:\d{2}$/.test(vals[i]!)) issues.push({ level: "error", message: `Invalid time in ${s}` });
