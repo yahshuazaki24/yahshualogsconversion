@@ -1,7 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useRef, useState } from "react";
-import Papa from "papaparse";
-import * as XLSX from "xlsx";
+import { readFile } from "@/lib/file-reader";
 import { toast } from "sonner";
 import { Upload, FileSpreadsheet, Loader2, Check, Undo2, Plus, Trash2, Download, Search, AlertTriangle, XCircle, ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -34,19 +33,6 @@ export const Route = createFileRoute("/")({
 
 const STEPS = ["Upload", "Check & Export"];
 const card = "rounded-2xl border border-border bg-card shadow-soft";
-
-async function readFile(file: File): Promise<string[][][]> {
-  if (/\.(csv|txt|dat)$/i.test(file.name)) {
-    const text = await file.text();
-    return [Papa.parse<string[]>(text, { skipEmptyLines: "greedy" }).data.map((r) => r.map(String))];
-  }
-  const wb = XLSX.read(await file.arrayBuffer(), { type: "array" });
-  return wb.SheetNames.map((n) =>
-    XLSX.utils
-      .sheet_to_json<string[]>(wb.Sheets[n]!, { header: 1, raw: false, defval: "", blankrows: false })
-      .map((r) => r.map((c) => String(c ?? ""))),
-  );
-}
 
 function App() {
   const [step, setStep] = useState(0);
