@@ -42,7 +42,7 @@ async function readFile(file: File): Promise<string[][]> {
     return Papa.parse<string[]>(text, { skipEmptyLines: "greedy" }).data.map((r) => r.map(String));
   }
   const wb = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true });
-  const ws = wb.Sheets[wb.SheetNames[0]];
+  const ws = wb.Sheets[wb.SheetNames[0]!]!;
   return XLSX.utils
     .sheet_to_json<string[]>(ws, { header: 1, raw: false, dateNF: "yyyy-mm-dd hh:mm:ss", defval: "", blankrows: false })
     .map((r) => r.map((c) => String(c ?? "")));
