@@ -180,12 +180,15 @@ function pickIdCol(grid: Cell[][], rows: number[], exclude: Set<number>): number
   for (let c = 0; c < width; c++) {
     if (exclude.has(c)) continue;
     const vals: string[] = [];
+    let filled = 0;
     for (const r of rows) {
       const cell = grid[r]![c];
+      if (cell && cell.k !== "empty") filled++;
       const id = cell?.k === "other" ? extractId(cell.text) : null;
       if (id) vals.push(id);
     }
-    let score = vals.length / rows.length;
+    // IDs may appear once per employee block, so score against filled cells only
+    let score = filled ? vals.length / filled : 0;
     // a row counter (1,2,3,...) is not an employee ID
     const nums = vals.map(Number);
     if (vals.length > 2 && nums.every((n, i) => i === 0 || n === nums[i - 1]! + 1)) score *= 0.3;
