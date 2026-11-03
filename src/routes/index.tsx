@@ -51,7 +51,7 @@ async function readFile(file: File): Promise<string[][]> {
 function guessFormat(rows: string[][], col: number): DateFormat {
   for (const r of rows.slice(0, 200)) {
     const m = String(r[col] ?? "").match(/^(\d{1,2})[-/.](\d{1,2})[-/.]\d{2,4}/);
-    if (m && +m[1] > 12) return "DD/MM/YYYY";
+    if (m && +m[1]! > 12) return "DD/MM/YYYY";
     if (/^\d{4}-/.test(String(r[col] ?? ""))) return "YYYY-MM-DD";
   }
   return "MM/DD/YYYY";
@@ -70,8 +70,8 @@ function App() {
   const onFile = async (file: File) => {
     try {
       const all = await readFile(file);
-      if (all.length < 2) return toast.error("The file has no data rows.");
-      const h = all[0].map((c, i) => c.trim() || `Column ${i + 1}`);
+      if (all.length < 2) { toast.error("The file has no data rows."); return; }
+      const h = all[0]!.map((c, i) => c.trim() || `Column ${i + 1}`);
       const m = detectMapping(h);
       setFileName(file.name);
       setHeaders(h);
