@@ -1,0 +1,3 @@
+- [x] Detect labeled employee blocks and resolve each day column.
+- [x] Parse glued times and support all requested upload formats.
+- [x] Apply final validation rules and verify sample/export behavior.
