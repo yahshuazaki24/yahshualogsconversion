@@ -237,6 +237,8 @@ function matrixPunches(grid: Cell[][], raw: string[][], fmt: DateFormat): RawPun
   for (let h = 0; h < grid.length; h++) {
     const row = grid[h]!;
     if (row.some((c) => c.k === "times" || c.k === "datetime")) continue;
+    // A stat-date range spread over several cells is metadata, not a matrix header.
+    if (/~|–|—|\bto\b/i.test((raw[h] ?? []).join(" ")) && row.filter((c) => c.k === "date").length >= 2) continue;
     const dateCols = new Map<number, string>();
     row.forEach((c, i) => { if (c.k === "date") dateCols.set(i, c.date); });
     if (dateCols.size < 2) {

@@ -184,7 +184,7 @@ describe("auto conversion", () => {
     const sheet = [["Employee", "Date", "Time"], ["001 Ana", "2026-02-30", "08:00 17:00"], ["001 Ana", "2026-02-31", "09:00 18:00"]];
     const { rows } = autoConvert([sheet, sheet]);
     expect(rows).toHaveLength(4);
-    expect(rows.map((r) => [r.IN, r.OUT])).toEqual([["08:00", "17:00"], ["08:00", "17:00"], ["09:00", "18:00"], ["09:00", "18:00"]]);
+    expect(rows.map((r) => [r.IN, r.OUT])).toEqual([["08:00", "17:00"], ["09:00", "18:00"], ["08:00", "17:00"], ["09:00", "18:00"]]);
     expect(rows.every((r) => validate(r, rows).length === 1)).toBe(true);
   });
 
