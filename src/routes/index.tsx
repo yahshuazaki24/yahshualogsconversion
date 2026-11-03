@@ -36,7 +36,7 @@ const STEPS = ["Upload", "Check & Export"];
 const card = "rounded-2xl border border-border bg-card shadow-soft";
 
 async function readFile(file: File): Promise<string[][][]> {
-  if (/\.(csv|txt)$/i.test(file.name)) {
+  if (/\.(csv|txt|dat)$/i.test(file.name)) {
     const text = await file.text();
     return [Papa.parse<string[]>(text, { skipEmptyLines: "greedy" }).data.map((r) => r.map(String))];
   }
@@ -143,10 +143,10 @@ function UploadStep({ onFile, busy, problem }: { onFile: (f: File) => void; busy
         </span>
         <div>
           <p className="text-base font-semibold text-heading">Drag & drop your biometric log export</p>
-          <p className="mt-1 text-sm text-muted-foreground">or click to browse — CSV or XLSX</p>
+          <p className="mt-1 text-sm text-muted-foreground">or click to browse — XLS, XLSX, CSV, TXT or DAT</p>
         </div>
         <Button type="button" className="rounded-xl" disabled={busy}>Choose file</Button>
-        <input ref={input} type="file" accept=".csv,.xlsx,.xls,.txt" className="hidden"
+        <input ref={input} type="file" accept=".csv,.xlsx,.xls,.txt,.dat" className="hidden"
           onChange={(e) => { const f = e.target.files?.[0]; if (f) onFile(f); e.target.value = ""; }} />
       </div>
       {problem && (
@@ -284,6 +284,7 @@ function EditStep({ rows, setRows, history, setHistory, fileName, ambiguousDate,
                       {is.map((i, n) => (
                         <div key={n} className={i.level === "error" ? "text-destructive" : "text-warning"}>
                           {i.message}
+                          {i.level === "warning" && r.extra.length > 0 && <div>Additional punches: {r.extra.join(", ")}</div>}
                         </div>
                       ))}
                     </td>
@@ -309,7 +310,7 @@ function EditStep({ rows, setRows, history, setHistory, fileName, ambiguousDate,
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle className="text-heading">Export with warnings?</AlertDialogTitle>
-            <AlertDialogDescription>{warnings} row(s) have warnings (e.g. more than 4 punches or OUT earlier than IN){ambiguousDate ? " Dates were read as Month/Day/Year." : ""}. They will be exported as-is.</AlertDialogDescription>
+            <AlertDialogDescription>{warnings} row(s) have more than 4 punches.{ambiguousDate ? " Dates were read as Month/Day/Year." : ""} Only the first 4 punches per row will be exported; additional punches remain available for review.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Review</AlertDialogCancel>

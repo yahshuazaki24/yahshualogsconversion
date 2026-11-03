@@ -114,6 +114,18 @@ export function normalizeTime(raw: string): string {
 
 const isRange = (s: string) => /\d{1,2}:\d{2}\s*(?:[AaPp]\.?[Mm]\.?)?\s*[-~–—]\s*\d{1,2}:\d{2}/.test(s);
 
+/** Matrix cells may contain annotations or concatenated punches, but not shift ranges. */
+function extractCellTimes(raw: string): number[] {
+  if (isRange(raw)) return [];
+  const out: number[] = [];
+  for (const match of raw.matchAll(TIME_G)) {
+    if (!match[1] || !match[2]) continue;
+    const minute = toMinutes(Number(match[1]), Number(match[2]), match[4]);
+    if (minute !== null) out.push(minute);
+  }
+  return out;
+}
+
 /* ---------- cell classification ---------- */
 type Cell =
   | { k: "empty" }
@@ -202,6 +214,25 @@ function cellId(cell: Cell | undefined): string {
   return cell?.k === "other" ? extractId(cell.text) ?? "" : "";
 }
 
+/** Labels can move between columns; values can be inline or in the next populated cell. */
+function labeledId(row: string[]): string | null {
+  for (let c = 0; c < row.length; c++) {
+    const text = (row[c] ?? "").trim();
+    const label = text.match(/^(?:(?:user|system|emp(?:loyee)?)\s*(?:id|no\.?|number|code)|id|no\.?|code|number|emp(?:loyee)?\.?)\s*[:#.]?\s*(.*)$/i);
+    if (!label) continue;
+    const inline = label[1]?.trim() ?? "";
+    if (inline) {
+      const id = extractId(inline);
+      if (id) return id;
+      continue;
+    }
+    const right = row.slice(c + 1).find((cell) => cell.trim());
+    const id = right ? extractId(right) : null;
+    if (id) return id;
+  }
+  return null;
+}
+
 /** Report periods are metadata, not punch dates. Match ISO first without truncating its year. */
 function reportPeriod(raw: string[][], header: number, fmt: DateFormat): { start: ParsedDate; end: ParsedDate | null } | null {
   for (let r = header - 1; r >= 0; r--) {
@@ -234,14 +265,22 @@ function resolveDay(day: number, period: { start: ParsedDate; end: ParsedDate | 
 
 /** Matrix: a header row with ≥2 date (or day-number) columns, punch times in the cells below. */
 function matrixPunches(grid: Cell[][], raw: string[][], fmt: DateFormat): RawPunch[] | null {
+  const out: RawPunch[] = [];
+  let activeDates = new Map<number, string>();
+  let activeId = "", lastId = "", block = 0;
+  const hasBlocks = raw.some((r) => labeledId(r) !== null);
+  let idCol = -1;
   for (let h = 0; h < grid.length; h++) {
-    const row = grid[h]!;
-    if (row.some((c) => c.k === "times" || c.k === "datetime")) continue;
+    const row = grid[h] ?? [];
+    const rawRow = raw[h] ?? [];
+    const id = labeledId(rawRow);
+    if (id !== null) { activeId = id; lastId = ""; block++; continue; }
+    if (!row.some((c) => c.k === "times" || c.k === "datetime") && !rawRow.some((c) => extractCellTimes(c).length)) {
     // A stat-date range spread over several cells is metadata, not a matrix header.
-    if (/~|–|—|\bto\b/i.test((raw[h] ?? []).join(" ")) && row.filter((c) => c.k === "date").length >= 2) continue;
+    if (/~|–|—|\bto\b/i.test(rawRow.join(" ")) && row.filter((c) => c.k === "date").length >= 2) continue;
     const dateCols = new Map<number, string>();
     row.forEach((c, i) => { if (c.k === "date") dateCols.set(i, c.date); });
-    if (dateCols.size < 2) {
+    if (dateCols.size < (hasBlocks ? 1 : 2)) {
       // day-number header (1..31) with the period taken from a date above it
       const days = row.map((_, i) => String(raw[h]?.[i] ?? "").trim()).map((v) => {
         const match = v.match(/^(\d{1,2})(?:\s*\(?\s*(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?\s*\)?)?$/i);
@@ -249,42 +288,41 @@ function matrixPunches(grid: Cell[][], raw: string[][], fmt: DateFormat): RawPun
       });
       const dayCols = days.map((d, i) => (d >= 1 && d <= 31 ? i : -1)).filter((i) => i >= 0);
       const period = reportPeriod(raw, h, fmt);
-      if (dayCols.length < 2 || (!period && dayCols.length < 5)) continue;
+      if (dayCols.length < (hasBlocks ? 1 : 2) || (!period && !hasBlocks && dayCols.length < 5)) continue;
       let y = period?.start.y ?? 0, m = period?.start.m ?? 0, prev = 0;
       for (const c of dayCols) {
         const d = days[c] ?? 0;
         if (d < prev) { m++; if (m > 12) { m = 1; y++; } }
         prev = d;
-        dateCols.set(c, period?.end ? resolveDay(d, period) : period ? `${y}-${m}-${d}` : "");
+        const candidate = period ? valid(y, m, d) : null;
+        const inRange = candidate && (!period?.end || new Date(y, m - 1, d) <= new Date(period.end.y, period.end.m - 1, period.end.d))
+          && (!period || new Date(y, m - 1, d) >= new Date(period.start.y, period.start.m - 1, period.start.d));
+        dateCols.set(c, inRange && candidate ? formatDate(candidate) : "");
       }
     }
     const body: number[] = [];
     for (let r = h + 1; r < grid.length; r++) {
       if ([...dateCols.keys()].some((c) => { const k = grid[r]![c]?.k; return k === "times" || k === "datetime"; })) body.push(r);
     }
-    if (!body.length) continue;
-    const idCol = pickIdCol(grid, body, new Set(dateCols.keys()));
-    const out: RawPunch[] = [];
-    let lastId = "";
-    for (const r of body) {
-      let id = idCol >= 0 ? cellId(grid[r]![idCol]) : "";
-      const named = idCol >= 0 && grid[r]![idCol]?.k !== "empty";
-      if (!id && !named) id = lastId; // continuation row of the same employee
-      if (id) lastId = id; else if (named) lastId = "";
-      const block = id ? undefined : `m${r}`;
-      for (const [c, date] of dateCols) {
-        const cell = grid[r]![c];
-        if (cell?.k === "times" || cell?.k === "datetime")
-          cell.times.forEach((t) => out.push({ id, date, time: t, block, source: `r${r}c${c}` }));
-      }
+    activeDates = dateCols;
+    idCol = pickIdCol(grid, body, new Set(dateCols.keys()));
+    continue;
     }
-    return out;
+    if (!activeDates.size) continue;
+    let rowId = activeId || (idCol >= 0 ? cellId(row[idCol]) : "");
+    const named = !activeId && idCol >= 0 && row[idCol]?.k !== "empty";
+    if (!rowId && !named) rowId = lastId;
+    if (rowId) lastId = rowId; else if (named) lastId = "";
+    for (const [c, date] of activeDates) {
+      const times = extractCellTimes(rawRow[c] ?? "");
+      times.forEach((time) => out.push({ id: rowId, date, time, block: rowId ? undefined : `m${block}-${h}`, source: `r${h}c${c}` }));
+    }
   }
-  return null;
+  return out.length ? out : null;
 }
 
 /** Long (one punch per row) and wide (several time columns per row). */
-function rowPunches(grid: Cell[][]): RawPunch[] {
+function rowPunches(grid: Cell[][], raw: string[][]): RawPunch[] {
   const data: number[] = [];
   grid.forEach((r, i) => {
     if (nonEmpty(r) >= 2 && r.some((c) => c.k === "times" || c.k === "datetime")) data.push(i);
@@ -316,11 +354,8 @@ function rowPunches(grid: Cell[][]): RawPunch[] {
       const row = grid[r]!;
       const isData = data.includes(r);
       if (!isData) {
-        for (const c of row) {
-          if (c.k !== "other") continue;
-          const m = c.text.match(/(?:\bid\b|\bno\.?|code|number|#|emp(?:loyee)?\.?)\s*[:#.]?\s*([A-Za-z]{0,4}-?\d[\w-]*)/i);
-          if (m) { cur = m[1]!; block++; break; }
-        }
+        const id = labeledId(raw[r] ?? []);
+        if (id !== null) { cur = id; block++; }
         if (prevData && nonEmpty(row) > 0) block++;
       }
       prevData = isData;
@@ -333,7 +368,7 @@ function rowPunches(grid: Cell[][]): RawPunch[] {
   let lastId = "", lastBlock = -1;
   for (const r of data) {
     const row = grid[r]!;
-    let id = idCol >= 0 ? cellId(row[idCol]) : "";
+    let id = sectionId.get(r) || (idCol >= 0 ? cellId(row[idCol]) : "");
     if (!id) id = idCol >= 0 && lastId && blockOf.get(r) === lastBlock ? lastId : sectionId.get(r) ?? "";
     if (!id && idCol >= 0) id = lastId && blockOf.get(r) === lastBlock ? lastId : "";
     if (id) { lastId = id; lastBlock = blockOf.get(r)!; }
@@ -362,7 +397,7 @@ export function autoConvert(sheets: string[][][]): ConvertResult {
     const tag = (ps: RawPunch[]) => ps.map((p) => ({ ...p, source: `s${i}${p.source}`, block: p.block ? `s${i}${p.block}` : undefined }));
     const mx = matrixPunches(g, sheets[i]!, fmt);
     if (mx?.length) { punches.push(...tag(mx)); layouts.add("matrix"); return; }
-    const rp = rowPunches(g);
+    const rp = rowPunches(g, sheets[i] ?? []);
     if (rp.length) { punches.push(...tag(rp)); layouts.add("rows"); }
   });
   if (!punches.length) throw new NoPunchError();
@@ -397,24 +432,19 @@ function groupPunches(punches: ResolvedPunch[]): OutRow[] {
 }
 
 /* ---------- validation ---------- */
-export function validate(row: OutRow, all: OutRow[]): Issue[] {
+export function validate(row: OutRow, _all: OutRow[]): Issue[] {
   if (!/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(row.date) || !parseDate(row.date, "MM/DD/YYYY"))
     return [{ level: "error", message: "Missing date" }];
   const issues: Issue[] = [];
-  if (!row.systemId.trim()) issues.push({ level: "error", message: "Missing System ID" });
+  if (!row.systemId.trim()) return [{ level: "error", message: "Missing System ID" }];
   const vals: string[] = SLOTS.map((s) => row[s].trim());
   SLOTS.forEach((s, i) => {
     if (vals[i] && !/^\d{2}:\d{2}$/.test(vals[i]!)) issues.push({ level: "error", message: `Invalid time in ${s}` });
   });
   const filled = vals.filter(Boolean).length + row.extra.length;
-  if (filled % 2 === 1) issues.push({ level: "error", message: "Incomplete punches: missing IN or OUT." });
-  if (row.extra.length) issues.push({ level: "warning", message: `More than 4 punches, please review (not placed: ${row.extra.join(", ")})` });
-  for (const [a, b] of [[0, 1], [2, 3]] as const) {
-    const i = parseTime(vals[a]!), o = parseTime(vals[b]!);
-    if (i !== null && o !== null && o < i) issues.push({ level: "warning", message: `${SLOTS[b]} earlier than ${SLOTS[a]}` });
-  }
-  if (row.systemId && all.some((r) => r !== row && r.systemId === row.systemId && r.date === row.date))
-    issues.push({ level: "warning", message: "Duplicate System ID + Date row" });
+  if (issues.length) return issues;
+  if (filled >= 6) return [{ level: "warning", message: "More than 4 punches, please review" }];
+  if (filled % 2 === 1) return [{ level: "error", message: "Missing punch: incomplete IN/OUT." }];
   return issues;
 }
 
