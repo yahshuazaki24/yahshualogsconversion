@@ -89,6 +89,11 @@ describe("auto conversion", () => {
     expect(r.extra).toEqual(["13:00"]);
   });
 
+  it("matrix with only two day columns", () => {
+    const m = [["Employee", "03/15/2019", "03/16/2019"], ["Ana Cruz (001)", "08:00 17:00", ""], ["Ben (002)", "", "17:00\n09:00"]];
+    expect(run(m)).toEqual([["3/15/2019", "001", "08:00", "17:00", "", ""], ["3/16/2019", "002", "09:00", "17:00", "", ""]]);
+  });
+
   it("scans all sheets", () => {
     expect(run([["Cover page"]], LONG)).toEqual(EXPECTED);
   });

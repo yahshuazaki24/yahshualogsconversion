@@ -198,14 +198,14 @@ function cellId(cell: Cell | undefined): string {
   return cell?.k === "other" ? extractId(cell.text) ?? "" : "";
 }
 
-/** Matrix: a header row with ≥3 date (or day-number) columns, punch times in the cells below. */
+/** Matrix: a header row with ≥2 date (or day-number) columns, punch times in the cells below. */
 function matrixPunches(grid: Cell[][], raw: string[][], fmt: DateFormat): RawPunch[] | null {
   for (let h = 0; h < grid.length; h++) {
     const row = grid[h]!;
     if (row.some((c) => c.k === "times" || c.k === "datetime")) continue;
     const dateCols = new Map<number, string>();
     row.forEach((c, i) => { if (c.k === "date") dateCols.set(i, c.date); });
-    if (dateCols.size < 3) {
+    if (dateCols.size < 2) {
       // day-number header (1..31) with the period taken from a date above it
       const days = row.map((_, i) => String(raw[h]![i] ?? "").trim()).map((v) => (/^\d{1,2}$/.test(v) ? +v : 0));
       const dayCols = days.map((d, i) => (d >= 1 && d <= 31 ? i : -1)).filter((i) => i >= 0);
