@@ -170,7 +170,7 @@ export function inferDateFormat(dates: string[]): { fmt: DateFormat; ambiguous: 
 }
 
 /* ---------- punch extraction ---------- */
-interface RawPunch { id: string; date: string; time: number; block?: string }
+interface RawPunch { id: string; date: string; time: number; block?: string | undefined }
 const SKIP_HEADER = /(total|hours?|hrs|late|tardy|under ?time|over ?time|\bot\b|duration|work ?time|sched|shift|plan|expected|required|break ?hrs|absent|night ?diff)/i;
 const nonEmpty = (r: Cell[]) => r.filter((c) => c.k !== "empty").length;
 
