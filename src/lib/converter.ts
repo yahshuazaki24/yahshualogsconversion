@@ -52,12 +52,12 @@ export function parseDate(raw: string, fmt: DateFormat): ParsedDate | null {
   let y: number, m: number, d: number;
   const iso = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
   if (iso) {
-    [y, m, d] = [+iso[1], +iso[2], +iso[3]];
+    [y, m, d] = [+iso[1]!, +iso[2]!, +iso[3]!];
   } else {
     const p = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})/);
     if (!p) return null;
-    const a = +p[1], b = +p[2];
-    y = +p[3];
+    const a = +p[1]!, b = +p[2]!;
+    y = +p[3]!;
     if (y < 100) y += 2000;
     if (fmt === "DD/MM/YYYY") [d, m] = [a, b];
     else [m, d] = [a, b];
@@ -74,11 +74,11 @@ export function parseTime(raw: string): number | null {
   const s = raw.trim();
   const t = s.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?\s*([AaPp]\.?\s*[Mm]\.?)?\s*$/);
   if (!t) return null;
-  let h = +t[1];
-  const min = +t[2];
+  let h = +t[1]!;
+  const min = +t[2]!;
   if (min > 59) return null;
-  if (t[4]) {
-    const pm = /p/i.test(t[4]);
+  if (t[4]!) {
+    const pm = /p/i.test(t[4]!);
     if (h < 1 || h > 12) return null;
     if (h === 12) h = pm ? 12 : 0;
     else if (pm) h += 12;
@@ -153,7 +153,7 @@ export function convert(rows: string[][], map: Mapping, fmt: DateFormat): OutRow
       }
     } else {
       uniq.forEach((p, i) => {
-        if (i < 4) row[SLOTS[i]] = formatTime(p.min);
+        if (i < 4) row[SLOTS[i]!] = formatTime(p.min);
         else row.extra.push(formatTime(p.min));
       });
     }
@@ -175,7 +175,7 @@ export function validate(row: OutRow, all: OutRow[]): Issue[] {
   if (!row.systemId.trim()) issues.push({ level: "error", message: "Missing System ID" });
   if (!/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(row.date) || !parseDate(row.date, "MM/DD/YYYY"))
     issues.push({ level: "error", message: "Invalid date" });
-  const vals = SLOTS.map((s) => row[s].trim());
+  const vals: string[] = SLOTS.map((s) => row[s].trim());
   SLOTS.forEach((s, i) => {
     if (vals[i] && !/^\d{2}:\d{2}$/.test(vals[i])) issues.push({ level: "error", message: `Invalid time in ${s}` });
   });
@@ -184,7 +184,7 @@ export function validate(row: OutRow, all: OutRow[]): Issue[] {
   if (filled % 2 === 1) issues.push({ level: "warning", message: "Odd number of punches" });
   const pairs: [number, number][] = [[0, 1], [2, 3]];
   for (const [a, b] of pairs) {
-    const i = parseTime(vals[a]), o = parseTime(vals[b]);
+    const i = parseTime(vals[a]!), o = parseTime(vals[b]!);
     if (vals[a] && vals[b] && i !== null && o !== null && o < i)
       issues.push({ level: "warning", message: `${SLOTS[b]} earlier than ${SLOTS[a]}` });
   }
