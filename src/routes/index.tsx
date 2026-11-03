@@ -284,9 +284,6 @@ function EditStep({ rows, setRows, history, setHistory, fileName, ambiguousDate,
                       {is.map((i, n) => (
                         <div key={n} className={i.level === "error" ? "text-destructive" : "text-warning"}>
                           {i.message}
-                          {i.message.includes("extra punch") && (
-                            <button className="ml-1 text-secondary underline" onClick={() => update(r.key, { extra: [] })}>discard extras</button>
-                          )}
                         </div>
                       ))}
                     </td>
@@ -312,7 +309,7 @@ function EditStep({ rows, setRows, history, setHistory, fileName, ambiguousDate,
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle className="text-heading">Export with warnings?</AlertDialogTitle>
-            <AlertDialogDescription>{warnings} row(s) have warnings (e.g. odd punch counts or OUT earlier than IN){ambiguousDate ? " Dates were read as Month/Day/Year." : ""}. They will be exported as-is.</AlertDialogDescription>
+            <AlertDialogDescription>{warnings} row(s) have warnings (e.g. more than 4 punches or OUT earlier than IN){ambiguousDate ? " Dates were read as Month/Day/Year." : ""}. They will be exported as-is.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Review</AlertDialogCancel>

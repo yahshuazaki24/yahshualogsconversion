@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { autoConvert, toCsv, parseTime, formatTime, NoPunchError, NO_PUNCH_MESSAGE, SLOTS, type OutRow } from "./converter";
+import { autoConvert, toCsv, parseTime, formatTime, NoPunchError, NO_PUNCH_MESSAGE, SLOTS, validate, type OutRow } from "./converter";
 
 const simple = (rows: OutRow[]) => rows.map((r) => [r.date, r.systemId, r.IN, r.OUT, r["IN.1"], r["OUT.1"]]);
 const run = (...sheets: string[][][]) => simple(autoConvert(sheets).rows);
@@ -82,11 +82,49 @@ describe("auto conversion", () => {
     expect(amb.ambiguousDate).toBe(true);
   });
 
-  it("removes exact duplicates and flags more than 4 punches", () => {
-    const rows = ["08:00", "08:00", "10:00", "11:00", "12:00", "13:00"].map((t) => ["001", "1/2/2020", t]);
-    const r = autoConvert([[["ID", "Date", "Time"], ...rows]]).rows[0]!;
-    expect(r.dupes).toBe(1);
-    expect(r.extra).toEqual(["13:00"]);
+  const one = (times: string[]) => {
+    const res = autoConvert([[["ID", "Date", "Time"], ...times.map((t) => ["001", "1/2/2020", t])]]).rows;
+    return { row: res[0]!, issues: validate(res[0]!, res) };
+  };
+  it("2 and 4 punches are valid with no issues", () => {
+    expect(one(["08:00", "17:00"]).issues).toEqual([]);
+    expect(one(["08:00", "12:00", "13:00", "17:00"]).issues).toEqual([]);
+  });
+  it("odd punch counts are errors", () => {
+    for (const t of [["08:00"], ["08:00", "12:00", "13:00"]]) {
+      expect(one(t).issues).toEqual([{ level: "error", message: "Incomplete punches: missing IN or OUT." }]);
+    }
+  });
+  it("6 punches: warning, first 4 placed, rest kept", () => {
+    const { row, issues } = one(["08:00", "10:00", "11:00", "12:00", "13:00", "17:00"]);
+    expect([row.IN, row.OUT, row["IN.1"], row["OUT.1"]]).toEqual(["08:00", "10:00", "11:00", "12:00"]);
+    expect(row.extra).toEqual(["13:00", "17:00"]);
+    expect(issues.map((i) => i.level)).toEqual(["warning"]);
+    expect(issues[0]!.message).toContain("More than 4 punches, please review");
+  });
+  it("exact duplicates are removed silently", () => {
+    const { row, issues } = one(["08:00", "08:00", "17:00"]);
+    expect([row.IN, row.OUT]).toEqual(["08:00", "17:00"]);
+    expect(issues).toEqual([]);
+  });
+  it("carries an employee ID shown once per block to all its rows", () => {
+    const sheet = [
+      ["Emp", "Date", "Time"],
+      ["001 - Ana", "1/2/2020", "08:00"], ["", "1/2/2020", "17:00"], ["", "1/3/2020", "08:00"], ["", "1/3/2020", "17:00"],
+      ["002 - Ben", "1/2/2020", "09:00"], ["", "1/2/2020", "18:00"],
+    ];
+    expect(run(sheet)).toEqual([
+      ["1/2/2020", "001", "08:00", "17:00", "", ""], ["1/2/2020", "002", "09:00", "18:00", "", ""], ["1/3/2020", "001", "08:00", "17:00", "", ""],
+    ]);
+  });
+  it("section headers give the ID; blank-ID blocks never merge", () => {
+    const sheet = [
+      ["Employee ID: 001 Ana Cruz"], ["Date", "In", "Out"], ["1/2/2020", "08:00", "17:00"],
+      ["Employee ID: 002 Ben"], ["Date", "In", "Out"], ["1/2/2020", "09:00", "18:00"],
+    ];
+    expect(run(sheet)).toEqual([["1/2/2020", "001", "08:00", "17:00", "", ""], ["1/2/2020", "002", "09:00", "18:00", "", ""]]);
+    const anon = [["Name: Ana"], ["Date", "In", "Out"], ["1/2/2020", "08:00", "17:00"], ["Name: Ben"], ["Date", "In", "Out"], ["1/2/2020", "09:00", "18:00"]];
+    expect(autoConvert([anon]).rows.length).toBe(2);
   });
 
   it("matrix with only two day columns", () => {
