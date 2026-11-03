@@ -218,8 +218,10 @@ function cellId(cell: Cell | undefined): string {
 function labeledId(row: string[]): string | null {
   for (let c = 0; c < row.length; c++) {
     const text = (row[c] ?? "").trim();
+    if (/^(?:employee|emp|id|user id|system id|emp no\.?)$/i.test(text)
+      && row.slice(c + 1).filter((cell) => /^\d{1,2}$/.test(cell.trim())).length >= 2) continue;
     const label = text.match(/^(?:(?:user|system|emp(?:loyee)?)\s*(?:id|no\.?|number|code)|id|no\.?|code|number|emp(?:loyee)?\.?)\s*[:#.]?\s*(.*)$/i);
-    if (!label) continue;
+    if (!label || /^(?:employee|emp)\.?$/i.test(text)) continue;
     const inline = label[1]?.trim() ?? "";
     if (inline) {
       const id = extractId(inline);

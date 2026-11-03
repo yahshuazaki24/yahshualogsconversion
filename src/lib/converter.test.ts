@@ -91,8 +91,8 @@ describe("auto conversion", () => {
     expect(one(["08:00", "12:00", "13:00", "17:00"]).issues).toEqual([]);
   });
   it("odd punch counts are errors", () => {
-    for (const t of [["08:00"], ["08:00", "12:00", "13:00"]]) {
-      expect(one(t).issues).toEqual([{ level: "error", message: "Incomplete punches: missing IN or OUT." }]);
+    for (const t of [["08:00"], ["08:00", "12:00", "13:00"], ["08:00", "10:00", "12:00", "13:00", "17:00"]]) {
+      expect(one(t).issues).toEqual([{ level: "error", message: "Missing punch: incomplete IN/OUT." }]);
     }
   });
   it("6 punches: warning, first 4 placed, rest kept", () => {
@@ -201,5 +201,75 @@ describe("auto conversion", () => {
 
   it("CSV headers match template exactly", () => {
     expect(toCsv([]).split("\r\n")[0]).toBe("Date,System ID,IN,OUT,IN.1,OUT.1");
+  });
+
+  it("ZKTeco sample: label and nearest right value apply to glued day punches", () => {
+    const { rows } = autoConvert([[
+      ["Attendance Record Report", "2026-10-01 ~ 2026-10-16"],
+      ["", "", "1", "2"],
+      ["Name:", "Employee 999", "", "ID:", "", "1"],
+      ["", "", "08:5514:4815:4618:00", "08:00\n17:00"],
+    ]]);
+    expect(simple(rows)).toEqual([
+      ["10/1/2026", "1", "08:55", "14:48", "15:46", "18:00"],
+      ["10/2/2026", "1", "08:00", "17:00", "", ""],
+    ]);
+    expect(rows.map((r) => validate(r, rows))).toEqual([[], []]);
+  });
+
+  it("ID blocks persist across multiple punch rows and repeated headers", () => {
+    expect(run([
+      ["2026-10-01 ~ 2026-10-16"], ["1", "2"],
+      ["User ID", "", "001", "Name", "Wrong (999)"],
+      ["08:55", "09:00"], ["18:00", "17:00"],
+      ["1", "2"], ["", "Emp No", "EMP-12", "Name", "Ana"],
+      ["08:00 12:00 13:00 17:00", ""],
+    ])).toEqual([
+      ["10/1/2026", "001", "08:55", "18:00", "", ""],
+      ["10/1/2026", "EMP-12", "08:00", "12:00", "13:00", "17:00"],
+      ["10/2/2026", "001", "09:00", "17:00", "", ""],
+    ]);
+  });
+
+  it("single day blocks extract seconds, AM/PM and annotations", () => {
+    expect(run([
+      ["2026-10-01 ~ 2026-10-16"], ["Day", "1"], ["ID: 1"],
+      ["", "Punches: 8:55:00 AM\n2:48 PM 3:46PM 6:00PM"],
+    ])).toEqual([["10/1/2026", "1", "08:55", "14:48", "15:46", "18:00"]]);
+  });
+
+  it("separate ID labels also apply to long and wide rows", () => {
+    expect(run([
+      ["User ID", "", "001", "Name:", "Wrong (999)"], ["Date", "In", "Out"],
+      ["2026-10-01", "08:00", "17:00"],
+      ["Emp No", "2"], ["Date/Time", "Device"],
+      ["2026-10-01 09:00", "device"], ["2026-10-01 18:00", "device"],
+    ])).toEqual([["10/1/2026", "001", "08:00", "17:00", "", ""], ["10/1/2026", "2", "09:00", "18:00", "", ""]]);
+  });
+
+  it("7 punches are warning only with extras retained", () => {
+    const { row, issues } = one(["08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "17:00"]);
+    expect(row.extra).toEqual(["12:00", "13:00", "17:00"]);
+    expect(issues).toEqual([{ level: "warning", message: "More than 4 punches, please review" }]);
+  });
+
+  it("missing identity suppresses punch-count messages", () => {
+    const { rows } = autoConvert([[["Date", "Time"], ["2026-10-01", "08:00"]]]);
+    const row = rows[0];
+    if (!row) throw new Error("Expected row");
+    expect(validate(row, rows)).toEqual([{ level: "error", message: "Missing System ID" }]);
+  });
+
+  it("blank day cells create no rows and sheets combine only matching ID and date", () => {
+    expect(run(
+      [["2026-10-01 ~ 2026-10-16"], ["1", "2"], ["ID:", "1"], ["08:55", ""]],
+      [["2026-10-01 ~ 2026-10-16"], ["1", "2"], ["ID:", "1"], ["18:00", ""]],
+    )).toEqual([["10/1/2026", "1", "08:55", "18:00", "", ""]]);
+  });
+
+  it("final validation does not flag 2 punches for earlier OUT or duplicate UI rows", () => {
+    const { row } = one(["08:00", "17:00"]);
+    const edited = { ...row, IN: "17:00", OUT: "08:00" };
+    expect(validate(edited, [edited, { ...edited, key: "copy" }])).toEqual([]);
   });
 });
