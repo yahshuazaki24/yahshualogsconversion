@@ -11,3 +11,4 @@
 
 - Conversion/validation rules live as pure functions in src/lib/converter.ts with tests beside them; UI only calls them (keeps payroll rules testable).
 - All file processing happens in the browser; no backend (clients upload sensitive logs).
+- Resolve dates during punch extraction before grouping; source-cell identity isolates unresolved dates so failed parsing cannot pool unrelated days.

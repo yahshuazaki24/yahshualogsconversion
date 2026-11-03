@@ -136,6 +136,69 @@ describe("auto conversion", () => {
     expect(run([["Cover page"]], LONG)).toEqual(EXPECTED);
   });
 
+  it("resolves October day headers from the stat-date range before grouping", () => {
+    const sheet = [
+      ["Stat-date: 2026-10-01 ~ 2026-10-16"],
+      ["Employee", "1", "2", "3", "4", "5", "6", "7"],
+      ["001 Ana", "08:00 17:00", "08:05 12:00 13:00 17:05", "08:10 17:10", "", "", "", ""],
+    ];
+    const { rows } = autoConvert([sheet]);
+    expect(simple(rows)).toEqual([
+      ["10/1/2026", "001", "08:00", "17:00", "", ""],
+      ["10/2/2026", "001", "08:05", "12:00", "13:00", "17:05"],
+      ["10/3/2026", "001", "08:10", "17:10", "", ""],
+    ]);
+    expect(rows.map((r) => validate(r, rows))).toEqual([[], [], []]);
+  });
+
+  it("supports short day matrices and uses the header, not a date inside the cell", () => {
+    expect(run([
+      ["Stat-date", "2026-10-01", "~", "2026-10-16"],
+      ["Employee", "1 Thu", "2 (Fri)"],
+      ["001 Ana", "2026-09-30 08:00 17:00", "08:00 12:00 13:00 17:00"],
+    ])).toEqual([
+      ["10/1/2026", "001", "08:00", "17:00", "", ""],
+      ["10/2/2026", "001", "08:00", "12:00", "13:00", "17:00"],
+    ]);
+  });
+
+  it("resolves day columns across a month and year boundary", () => {
+    expect(run([
+      ["Stat-date: 2026-12-30 ~ 2027-01-02"],
+      ["Employee", "30", "31", "1", "2"],
+      ["001 Ana", "08:00 17:00", "08:00 17:00", "09:00 18:00", "09:00 18:00"],
+    ]).map((r) => r[0])).toEqual(["12/30/2026", "12/31/2026", "1/1/2027", "1/2/2027"]);
+  });
+
+  it("unresolved matrix days remain separate, retaining every punch", () => {
+    const { rows } = autoConvert([[
+      ["Employee", "1", "2", "3", "4", "5"],
+      ["001 Ana", "08:00 12:00 13:00 17:00 18:00 19:00 20:00", "09:00 18:00", "10:00", "", ""],
+    ]]);
+    expect(rows).toHaveLength(3);
+    expect(rows.map((r) => SLOTS.filter((s) => r[s]).length + r.extra.length)).toEqual([7, 2, 1]);
+    expect(rows.map((r) => validate(r, rows))).toEqual(Array.from({ length: 3 }, () => [{ level: "error", message: "Missing date" }]));
+  });
+
+  it("invalid dates in different rows or sheets never pool punches", () => {
+    const sheet = [["Employee", "Date", "Time"], ["001 Ana", "2026-02-30", "08:00 17:00"], ["001 Ana", "2026-02-31", "09:00 18:00"]];
+    const { rows } = autoConvert([sheet, sheet]);
+    expect(rows).toHaveLength(4);
+    expect(rows.map((r) => [r.IN, r.OUT])).toEqual([["08:00", "17:00"], ["08:00", "17:00"], ["09:00", "18:00"], ["09:00", "18:00"]]);
+    expect(rows.every((r) => validate(r, rows).length === 1)).toBe(true);
+  });
+
+  it("days outside the stat-date range remain missing instead of guessing", () => {
+    const { rows } = autoConvert([[
+      ["Stat-date: 2026-10-01 ~ 2026-10-16"], ["Employee", "16", "17"],
+      ["001 Ana", "08:00 17:00", "09:00 18:00"],
+    ]]);
+    expect(rows.map((r) => r.date)).toEqual(["10/16/2026", ""]);
+    const missing = rows.find((r) => !r.date);
+    if (!missing) throw new Error("Expected unresolved day");
+    expect(validate(missing, rows)).toEqual([{ level: "error", message: "Missing date" }]);
+  });
+
   it("CSV headers match template exactly", () => {
     expect(toCsv([]).split("\r\n")[0]).toBe("Date,System ID,IN,OUT,IN.1,OUT.1");
   });
