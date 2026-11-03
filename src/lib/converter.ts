@@ -250,21 +250,6 @@ function reportPeriod(raw: string[][], header: number, fmt: DateFormat): { start
   return null;
 }
 
-function resolveDay(day: number, period: { start: ParsedDate; end: ParsedDate | null }): string {
-  if (period.end) {
-    const matches: ParsedDate[] = [];
-    const cursor = new Date(period.start.y, period.start.m - 1, period.start.d);
-    const end = new Date(period.end.y, period.end.m - 1, period.end.d);
-    // A day number must identify exactly one date in the reported range.
-    for (let n = 0; cursor <= end && n < 366; n++, cursor.setDate(cursor.getDate() + 1)) {
-      if (cursor.getDate() === day) matches.push({ y: cursor.getFullYear(), m: cursor.getMonth() + 1, d: day });
-    }
-    const match = matches.length === 1 ? matches[0] : undefined;
-    return match ? formatDate(match) : "";
-  }
-  return "";
-}
-
 /** Matrix: a header row with ≥2 date (or day-number) columns, punch times in the cells below. */
 function matrixPunches(grid: Cell[][], raw: string[][], fmt: DateFormat): RawPunch[] | null {
   const out: RawPunch[] = [];
