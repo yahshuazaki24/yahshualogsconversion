@@ -8,3 +8,6 @@
 > Commits you push to the connected branch sync back to Lovable and show up in
 > the editor, so keep the branch in a working state.
 <!-- LOVABLE:END -->
+
+- Conversion/validation rules live as pure functions in src/lib/converter.ts with tests beside them; UI only calls them (keeps payroll rules testable).
+- All file processing happens in the browser; no backend (clients upload sensitive logs).
