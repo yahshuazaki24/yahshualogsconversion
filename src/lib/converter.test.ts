@@ -267,9 +267,10 @@ describe("auto conversion", () => {
     )).toEqual([["10/1/2026", "1", "08:55", "18:00", "", ""]]);
   });
 
-  it("final validation does not flag 2 punches for earlier OUT or duplicate UI rows", () => {
+  it("earlier OUT is a warning without changing source punches", () => {
     const { row } = one(["08:00", "17:00"]);
     const edited = { ...row, IN: "17:00", OUT: "08:00" };
-    expect(validate(edited, [edited, { ...edited, key: "copy" }])).toEqual([]);
+    expect(validate(edited, [edited, { ...edited, key: "copy" }])).toEqual([{ level: "warning", message: "OUT earlier than IN" }]);
+    expect([edited.IN, edited.OUT]).toEqual(["17:00", "08:00"]);
   });
 });

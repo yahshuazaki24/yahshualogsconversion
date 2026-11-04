@@ -115,7 +115,7 @@ export function normalizeTime(raw: string): string {
 const isRange = (s: string) => /\d{1,2}:\d{2}\s*(?:[AaPp]\.?[Mm]\.?)?\s*[-~–—]\s*\d{1,2}:\d{2}/.test(s);
 
 /** Matrix cells may contain annotations or concatenated punches, but not shift ranges. */
-function extractCellTimes(raw: string): number[] {
+export function extractCellTimes(raw: string): number[] {
   if (isRange(raw)) return [];
   const out: number[] = [];
   for (const match of raw.matchAll(TIME_G)) {
@@ -182,8 +182,8 @@ export function inferDateFormat(dates: string[]): { fmt: DateFormat; ambiguous: 
 }
 
 /* ---------- punch extraction ---------- */
-interface RawPunch { id: string; date: string; time: number; source: string; block?: string | undefined }
-interface ResolvedPunch extends Omit<RawPunch, "date"> { date: ParsedDate | null }
+interface RawPunch { id: string; date: string; time: number; source: string; block?: string | undefined; slot?: Slot }
+export interface ResolvedPunch extends Omit<RawPunch, "date"> { date: ParsedDate | null }
 const SKIP_HEADER = /(total|hours?|hrs|late|tardy|under ?time|over ?time|\bot\b|duration|work ?time|sched|shift|plan|expected|required|break ?hrs|absent|night ?diff)/i;
 const nonEmpty = (r: Cell[]) => r.filter((c) => c.k !== "empty").length;
 
@@ -392,8 +392,8 @@ export function autoConvert(sheets: string[][][]): ConvertResult {
   return { rows: groupPunches(resolved), ambiguousDate: ambiguous, layout: [...layouts].join("+") };
 }
 
-function groupPunches(punches: ResolvedPunch[]): OutRow[] {
-  const groups = new Map<string, { id: string; date: string; sortKey: string; times: number[] }>();
+export function groupPunches(punches: ResolvedPunch[]): OutRow[] {
+  const groups = new Map<string, { id: string; date: string; sortKey: string; punches: ResolvedPunch[] }>();
   for (const p of punches) {
     const pd = p.date;
     const date = pd ? formatDate(pd) : "";
@@ -401,17 +401,25 @@ function groupPunches(punches: ResolvedPunch[]): OutRow[] {
     // Without a resolved date, only punches from the very same source cell may share a row.
     const k = JSON.stringify([p.id || `\u0001${p.block ?? ""}`, pd ? date : `unresolved:${p.source}`]);
     let g = groups.get(k);
-    if (!g) groups.set(k, (g = { id: p.id, date, sortKey, times: [] }));
-    g.times.push(p.time);
+    if (!g) groups.set(k, (g = { id: p.id, date, sortKey, punches: [] }));
+    g.punches.push(p);
   }
   const out = [...groups.values()].map((g) => {
-    const sorted = [...g.times].sort((a, b) => a - b);
-    const uniq = sorted.filter((t, i) => i === 0 || t !== sorted[i - 1]);
+    const sorted = [...g.punches].sort((a, b) => a.time - b.time);
+    const uniq: ResolvedPunch[] = [];
+    for (const punch of sorted) {
+      const previous = uniq.at(-1);
+      if (!previous || punch.time - previous.time > 2) uniq.push(punch);
+    }
     const row: OutRow & { sortKey: string } = {
       key: newKey(), date: g.date, systemId: g.id, sortKey: g.sortKey,
       IN: "", OUT: "", "IN.1": "", "OUT.1": "", extra: [], dupes: sorted.length - uniq.length,
     };
-    uniq.forEach((t, i) => { if (i < 4) row[SLOTS[i]!] = formatTime(t); else row.extra.push(formatTime(t)); });
+    const typed = uniq.every((p) => p.slot) && new Set(uniq.map((p) => p.slot)).size === uniq.length;
+    uniq.forEach((p, i) => {
+      const slot = typed ? p.slot : SLOTS[i];
+      if (slot) row[slot] = formatTime(p.time); else row.extra.push(formatTime(p.time));
+    });
     return row;
   });
   out.sort((a, b) => (a.sortKey < b.sortKey ? -1 : a.sortKey > b.sortKey ? 1 : a.systemId.localeCompare(b.systemId, undefined, { numeric: true })));
@@ -430,9 +438,32 @@ export function validate(row: OutRow, _all: OutRow[]): Issue[] {
   });
   const filled = vals.filter(Boolean).length + row.extra.length;
   if (issues.length) return issues;
-  if (filled >= 6) return [{ level: "warning", message: "More than 4 punches, please review" }];
-  if (filled % 2 === 1) return [{ level: "error", message: "Missing punch: incomplete IN/OUT." }];
+  if (filled >= 6) issues.push({ level: "warning", message: "More than 4 punches, please review" });
+  else if (filled % 2 === 1) return [{ level: "error", message: "Missing punch: incomplete IN/OUT." }];
+  for (const [inSlot, outSlot] of [["IN", "OUT"], ["IN.1", "OUT.1"]] as const) {
+    const start = parseTime(row[inSlot]), end = parseTime(row[outSlot]);
+    if (start !== null && end !== null && end < start) {
+      issues.push({ level: "warning", message: "OUT earlier than IN" });
+      break;
+    }
+  }
   return issues;
+}
+
+export function filterRows(rows: OutRow[], id: string, date: string, issuesOnly = false): OutRow[] {
+  return rows.filter((r) => r.systemId.toLowerCase().includes(id.trim().toLowerCase())
+    && r.date.includes(date.trim()) && (!issuesOnly || validate(r, rows).length > 0));
+}
+
+export function exportSelection(rows: OutRow[], issuesOnly: boolean) {
+  const selected = issuesOnly ? rows.filter((r) => validate(r, rows).length > 0) : rows;
+  let errors = 0, warnings = 0;
+  for (const row of selected) {
+    const issues = validate(row, rows);
+    if (issues.some((i) => i.level === "error")) errors++;
+    else if (issues.length) warnings++;
+  }
+  return { rows: selected, errors, warnings, needsConfirmation: errors + warnings > 0 };
 }
 
 /* ---------- export ---------- */

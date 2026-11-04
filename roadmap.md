@@ -1,3 +1,4 @@
-- [x] Detect labeled employee blocks and resolve each day column.
-- [x] Parse glued times and support all requested upload formats.
-- [x] Apply final validation rules and verify sample/export behavior.
+- [ ] Add bounded, name-masked AI recipe detection with validated local application and fallback.
+- [ ] Update repeat-tap and punch-type conversion/validation rules and tests.
+- [ ] Add combined searches/live counts and all/issues-only exports with confirmation.
+- [ ] Verify formats, live AI detection, and export flows.
