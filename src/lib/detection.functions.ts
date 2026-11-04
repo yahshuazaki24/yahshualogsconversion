@@ -7,6 +7,11 @@ const sampleSchema = z.array(z.object({ sheet: z.number().int().min(0).max(63), 
 export const detectFormat = createServerFn({ method: "POST" })
   .inputValidator(z.object({ sample: sampleSchema, feedback: z.string().max(500).nullable(), runId: z.string().max(200).nullable() }))
   .handler(async ({ data }) => {
+    // Operational metadata only: no samples or payroll data are persisted.
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: blocked, error: stateError } = await supabaseAdmin.from("ai_detection_access_state").select("message").eq("id", "format-detection").maybeSingle();
+    if (stateError) return { recipe: null, error: "AI access could not be checked. Using built-in detection.", terminal: true, runId: null };
+    if (blocked) return { recipe: null, error: blocked.message, terminal: true, runId: null };
     const key = process.env['LOVABLE_API_KEY'];
     if (!key) return { recipe: null, error: "AI format detection is not configured. Using built-in detection.", terminal: true, runId: null };
     if (JSON.stringify(data.sample).length > 120000) return { recipe: null, error: "Sample too large. Using built-in detection.", terminal: false, runId: null };
@@ -26,6 +31,9 @@ export const detectFormat = createServerFn({ method: "POST" })
       let message = e.message ?? "AI format detection failed. Using built-in detection.";
       if (e.responseBody) {
         try { const body = JSON.parse(e.responseBody); message = body.message ?? body.error?.message ?? message; } catch { /* no body text is exposed */ }
+      }
+      if (e.statusCode === 403 || e.statusCode === 402) {
+        await supabaseAdmin.from("ai_detection_access_state").upsert({ id: "format-detection", message });
       }
       return { recipe: null, error: message, terminal: true, runId: null };
     }

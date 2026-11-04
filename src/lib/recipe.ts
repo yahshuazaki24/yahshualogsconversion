@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { autoConvert, extractCellTimes, extractId, formatDate, groupPunches, parseDate, type ConvertResult, type ResolvedPunch, type Slot } from "./converter";
+import { autoConvert, extractCellTimes, extractId, groupPunches, inferDateFormat, parseDate, type ConvertResult, type ResolvedPunch, type Slot } from "./converter";
 
 const col = z.number().int().min(0).max(255).nullable();
 export const sheetRecipeSchema = z.object({
@@ -29,7 +29,7 @@ function maskCell(value: string): string {
   if (id) return id === s ? s : `${id} [masked]`;
   if (/^\d+(?:\.\d+)?$/.test(s) || parseDate(s, "MM/DD/YYYY") || parseDate(s, "DD/MM/YYYY"))
     return s.replace(/[A-Za-z]+/g, (word) => /^(T|Z|AM|PM)$/i.test(word) ? word : "[masked]").slice(0, 512);
-  if (extractCellTimes(s).length) return s.replace(/[^\d:;.,\s/APMapm-]/g, "").slice(0, 512);
+  if (extractCellTimes(s).length) return (s.match(/\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AP]M)?/gi) ?? []).join(" ").slice(0, 512);
   const structural = /^(attendance record report|attendance|record|report|time card|daily time record|stat[- ]date|date|time|punch time|punch state|emp code|employee code|employee|emp|user id|system id|emp no\.?|name|in\d*|out\d*|time in|time out|time\d+|terminal|device|status|verify|check in|check out|total hours|schedule|shift|day|no\.?|id)$/i;
   if (structural.test(s)) return s;
   const dates = s.match(/\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2}[-/.]\d{4}/g);
@@ -46,6 +46,7 @@ function serialDate(s: string) {
 export function convertWithRecipe(sheets: string[][][], input: unknown): ConvertResult {
   const recipe = recipeSchema.parse(input);
   if (recipe.confidence < 0.75) throw new Error("Low confidence");
+  if (new Set(recipe.sheets.map((s) => s.sheet)).size !== sheets.length) throw new Error("Recipe must account for every sheet");
   const punches: ResolvedPunch[] = [];
   for (const spec of recipe.sheets) {
     const sheet = sheets[spec.sheet];
@@ -93,11 +94,15 @@ export function convertWithRecipe(sheets: string[][][], input: unknown): Convert
     }
   }
   if (!punches.length) throw new Error("Recipe found no punches");
-  return { rows: groupPunches(punches), ambiguousDate: false, layout: recipe.format };
+  const ambiguousDate = inferDateFormat(sheets.flatMap((s) => s.flat())).ambiguous;
+  return { rows: groupPunches(punches), ambiguousDate, layout: recipe.format };
 }
 
 export function checkRecipeSample(sheets: string[][][], recipe: unknown) {
-  const sample = sheets.map((sheet) => sheet.slice(0, 40));
+  const sample = sheets.map((sheet) => {
+    let nonempty = 0;
+    return sheet.map((row) => row.some((cell) => cell.trim()) && ++nonempty > 40 ? [] : row);
+  });
   const result = convertWithRecipe(sample, recipe);
   if (result.rows.some((r) => !r.systemId || !r.date)) throw new Error("Sample has unresolved employee IDs or dates");
   return result;

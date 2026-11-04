@@ -15,3 +15,4 @@
 - Browser file decoding lives in src/lib/file-reader.ts with format tests; keep upload UI separate from text/workbook decoding for consistent format coverage.
 
 - Parsing recipes are schema-validated in src/lib/recipe.ts and sample-tested before local application; server-only gateway helpers never generate payroll output.
+- Persist AI access-denial metadata in a service-only circuit breaker, never samples or payroll values; clear it only after access is restored.
