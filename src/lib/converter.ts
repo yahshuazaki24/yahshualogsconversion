@@ -115,7 +115,7 @@ export function normalizeTime(raw: string): string {
 const isRange = (s: string) => /\d{1,2}:\d{2}\s*(?:[AaPp]\.?[Mm]\.?)?\s*[-~–—]\s*\d{1,2}:\d{2}/.test(s);
 
 /** Matrix cells may contain annotations or concatenated punches, but not shift ranges. */
-function extractCellTimes(raw: string): number[] {
+export function extractCellTimes(raw: string): number[] {
   if (isRange(raw)) return [];
   const out: number[] = [];
   for (const match of raw.matchAll(TIME_G)) {
@@ -182,8 +182,8 @@ export function inferDateFormat(dates: string[]): { fmt: DateFormat; ambiguous: 
 }
 
 /* ---------- punch extraction ---------- */
-interface RawPunch { id: string; date: string; time: number; source: string; block?: string | undefined }
-interface ResolvedPunch extends Omit<RawPunch, "date"> { date: ParsedDate | null }
+interface RawPunch { id: string; date: string; time: number; source: string; block?: string | undefined; slot?: Slot }
+export interface ResolvedPunch extends Omit<RawPunch, "date"> { date: ParsedDate | null }
 const SKIP_HEADER = /(total|hours?|hrs|late|tardy|under ?time|over ?time|\bot\b|duration|work ?time|sched|shift|plan|expected|required|break ?hrs|absent|night ?diff)/i;
 const nonEmpty = (r: Cell[]) => r.filter((c) => c.k !== "empty").length;
 
