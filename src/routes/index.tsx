@@ -1,5 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useRef, useState } from "react";
+import { useServerFn } from "@tanstack/react-start";
+import { detectFormat } from "@/lib/detection.functions";
+import { makeSample, checkRecipeSample, convertWithRecipe } from "@/lib/recipe";
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { readFile } from "@/lib/file-reader";
 import { toast } from "sonner";
 import { Upload, FileSpreadsheet, Loader2, Check, Undo2, Plus, Trash2, Download, Search, AlertTriangle, XCircle, ArrowLeft } from "lucide-react";
@@ -13,7 +17,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import {
   autoConvert, NoPunchError, newKey, normalizeTime, parseDate, formatDate, toCsv, validate,
-  SLOTS, TEMPLATE_HEADERS, type OutRow, type Issue,
+  SLOTS, TEMPLATE_HEADERS, filterRows, exportSelection, type OutRow, type Issue,
 } from "@/lib/converter";
 import { cn } from "@/lib/utils";
 
@@ -35,6 +39,8 @@ const STEPS = ["Upload", "Check & Export"];
 const card = "rounded-2xl border border-border bg-card shadow-soft";
 
 function App() {
+  const detect = useServerFn(detectFormat);
+  const [detected, setDetected] = useState("");
   const [step, setStep] = useState(0);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState("");
@@ -47,14 +53,32 @@ function App() {
     setBusy(true);
     setProblem("");
     try {
-      const res = autoConvert(await readFile(file));
+      const sheets = await readFile(file);
+      const sample = makeSample(sheets);
+      let res;
+      let feedback: string | null = null;
+      let runId: string | null = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const result = await detect({ data: { sample, feedback, runId } });
+        runId = result.runId;
+        if (result.error) { toast.error(result.error); break; }
+        try {
+          checkRecipeSample(sheets, result.recipe);
+          res = convertWithRecipe(sheets, result.recipe);
+          break;
+        } catch (error) {
+          feedback = error instanceof Error ? error.message : "Recipe failed sample validation";
+        }
+      }
+      res ??= autoConvert(sheets);
+      setDetected(res.layout);
       setFileName(file.name);
       setRows(res.rows);
       setAmbiguousDate(res.ambiguousDate);
       setHistory([]);
       setStep(1);
     } catch (e) {
-      setProblem(e instanceof NoPunchError ? e.message : "Could not read this file. Please upload a CSV or Excel export.");
+      setProblem(e instanceof NoPunchError ? e.message : "We couldn't read this file. Try another export.");
     } finally {
       setBusy(false);
     }
@@ -65,7 +89,7 @@ function App() {
       <div className="mx-auto max-w-6xl px-4 py-8 sm:py-12">
         <header className="mb-8 text-center">
           <h1 className="text-2xl font-bold tracking-tight text-heading sm:text-3xl">YAHSHUA Payroll Online Logs Converter</h1>
-          <p className="mt-2 text-sm text-muted-foreground">Drop your biometric log export — it converts automatically. Files never leave your browser.</p>
+          <p className="mt-2 text-sm text-muted-foreground">Only a small sample is analyzed for format detection. Full conversion happens in your browser.</p>
         </header>
 
         <Stepper step={step} />
@@ -73,7 +97,7 @@ function App() {
         {step === 0 && <UploadStep onFile={onFile} busy={busy} problem={problem} />}
         {step === 1 && (
           <EditStep rows={rows} setRows={setRows} history={history} setHistory={setHistory} fileName={fileName}
-            ambiguousDate={ambiguousDate} onBack={() => setStep(0)} />
+            ambiguousDate={ambiguousDate} detected={detected} onBack={() => setStep(0)} />
         )}
       </div>
     </div>
@@ -165,50 +189,52 @@ function Stat({ label, value, tone }: { label: string; value: number; tone?: "er
   );
 }
 
-function EditStep({ rows, setRows, history, setHistory, fileName, ambiguousDate, onBack }: {
+function EditStep({ rows, setRows, history, setHistory, fileName, ambiguousDate, detected, onBack }: {
   rows: OutRow[]; setRows: (r: OutRow[]) => void; history: OutRow[][]; setHistory: (h: OutRow[][]) => void;
-  fileName: string; ambiguousDate: boolean; onBack: () => void;
+  fileName: string; ambiguousDate: boolean; detected: string; onBack: () => void;
 }) {
   const [issuesOnly, setIssuesOnly] = useState(false);
-  const [q, setQ] = useState("");
+  const [idSearch, setIdSearch] = useState("");
+  const [dateSearch, setDateSearch] = useState("");
+  const [exportIssues, setExportIssues] = useState(false);
   const [confirm, setConfirm] = useState(false);
-  const { errors, warnings, map } = useMemo(() => issueCounts(rows), [rows]);
+  const searched = useMemo(() => filterRows(rows, idSearch, dateSearch), [rows, idSearch, dateSearch]);
+  const { map } = useMemo(() => issueCounts(rows), [rows]);
+  const visible = filterRows(searched, "", "", issuesOnly);
+  const { errors, warnings } = issueCounts(visible);
+  const selection = exportSelection(rows, exportIssues);
 
   const commit = (next: OutRow[]) => { setHistory([...history.slice(-49), rows]); setRows(next); };
   const update = (key: string, patch: Partial<OutRow>) => commit(rows.map((r) => (r.key === key ? { ...r, ...patch } : r)));
   const undo = () => { const prev = history.at(-1); if (prev) { setRows(prev); setHistory(history.slice(0, -1)); } };
   const addRow = () => commit([...rows, { key: newKey(), date: "", systemId: "", IN: "", OUT: "", "IN.1": "", "OUT.1": "", extra: [], dupes: 0 }]);
 
-  const visible = rows.filter((r) => {
-    if (issuesOnly && !map.get(r.key)?.length) return false;
-    if (q && !`${r.systemId} ${r.date}`.toLowerCase().includes(q.toLowerCase())) return false;
-    return true;
-  });
-
-  const download = () => {
-    const blob = new Blob([toCsv(rows)], { type: "text/csv;charset=utf-8" });
+  const download = (issues = exportIssues) => {
+    const selected = exportSelection(rows, issues).rows;
+    const blob = new Blob(["\ufeff" + toCsv(selected)], { type: "text/csv;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `${fileName.replace(/\.[^.]+$/, "") || "daily-logs"}_daily_logs.csv`;
+    a.download = `${fileName.replace(/\.[^.]+$/, "") || "daily-logs"}_${issues ? "issues" : "daily_logs"}.csv`;
     a.click();
     URL.revokeObjectURL(a.href);
     toast.success("CSV exported");
   };
-  const onExport = () => {
-    if (errors) return toast.error(`Fix ${errors} row(s) with errors before exporting.`);
-    if (warnings) return setConfirm(true);
-    download();
+  const onExport = (issues: boolean) => {
+    setExportIssues(issues);
+    if (exportSelection(rows, issues).needsConfirmation) setConfirm(true);
+    else download(issues);
   };
 
   const cellCls = "h-8 rounded-lg border-transparent bg-transparent px-2 shadow-none hover:border-border focus-visible:border-primary";
 
-  const employees = new Set(rows.map((r) => r.systemId).filter(Boolean)).size;
+  const employees = new Set(visible.map((r) => r.systemId).filter(Boolean)).size;
 
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
         <FileSpreadsheet className="h-4 w-4 text-secondary" /> {fileName}
       </div>
+      <p className="text-sm text-muted-foreground">Detected: {detected}</p>
       {ambiguousDate && (
         <div role="alert" className="flex items-start gap-2 rounded-xl border border-warning/40 bg-warning/10 p-4 text-sm text-foreground">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
@@ -216,7 +242,7 @@ function EditStep({ rows, setRows, history, setHistory, fileName, ambiguousDate,
         </div>
       )}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <Stat label="Rows" value={rows.length} />
+        <Stat label="Rows" value={visible.length} />
         <Stat label="Employees" value={employees} />
         <Stat label="Errors" value={errors} tone="error" />
         <Stat label="Warnings" value={warnings} tone="warning" />
@@ -224,8 +250,9 @@ function EditStep({ rows, setRows, history, setHistory, fileName, ambiguousDate,
       <div className={cn(card, "flex flex-wrap items-center gap-3 p-4")}>
         <div className="relative min-w-48 flex-1">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search System ID or date" className="rounded-xl pl-9" />
+          <Input aria-label="Search System ID" value={idSearch} onChange={(e) => setIdSearch(e.target.value)} placeholder="Search System ID" className="rounded-xl pl-9" />
         </div>
+        <div className="relative min-w-48 flex-1"><Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" /><Input aria-label="Search Date" value={dateSearch} onChange={(e) => setDateSearch(e.target.value)} placeholder="Search Date" className="rounded-xl pl-9" /></div>
         <div className="flex items-center gap-2">
           <Switch id="issues" checked={issuesOnly} onCheckedChange={setIssuesOnly} />
           <Label htmlFor="issues" className="text-sm">Show issues only</Label>
@@ -289,18 +316,18 @@ function EditStep({ rows, setRows, history, setHistory, fileName, ambiguousDate,
 
       <div className="flex justify-between">
         <Button variant="ghost" className="rounded-xl" onClick={onBack}><ArrowLeft className="h-4 w-4" /> New file</Button>
-        <Button className="rounded-xl" onClick={onExport}><Download className="h-4 w-4" /> Export CSV</Button>
+        <DropdownMenu><DropdownMenuTrigger asChild><Button className="rounded-xl"><Download className="h-4 w-4" /> Export CSV</Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => onExport(false)}>Export all</DropdownMenuItem><DropdownMenuItem onSelect={() => onExport(true)}>Export issues only (errors + warnings)</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
       </div>
 
       <AlertDialog open={confirm} onOpenChange={setConfirm}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle className="text-heading">Export with warnings?</AlertDialogTitle>
-            <AlertDialogDescription>{warnings} row(s) have more than 4 punches.{ambiguousDate ? " Dates were read as Month/Day/Year." : ""} Only the first 4 punches per row will be exported; additional punches remain available for review.</AlertDialogDescription>
+            <AlertDialogTitle className="text-heading">{selection.errors} errors and {selection.warnings} warnings remain. Export anyway?</AlertDialogTitle>
+            <AlertDialogDescription>Only the six template columns will be exported. Additional punches remain available for review.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Review</AlertDialogCancel>
-            <AlertDialogAction onClick={download}>Export anyway</AlertDialogAction>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => download()}>Export anyway</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
