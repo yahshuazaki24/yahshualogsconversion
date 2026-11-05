@@ -339,7 +339,8 @@ function timecardPunches(raw: string[][], fmt: DateFormat): RawPunch[] | null {
   let id = "", block = 0, sawBlock = false;
   let pairs: { inCol: number; outCol: number }[] | null = null;
   let dateCol = -1, date = "", dateRow = -1, pairIdx = 0, stray = false;
-  const period = reportPeriod(raw, raw.length, fmt);
+  const pr = raw.findIndex((row) => (row.join(" ").match(/\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}/g) ?? []).length >= 2);
+  const period = pr >= 0 ? reportPeriod(raw, pr + 1, fmt) : null;
   for (let r = 0; r < raw.length; r++) {
     const row = raw[r] ?? [];
     const cells = row.map((c) => String(c ?? "").trim());
