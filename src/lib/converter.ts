@@ -152,8 +152,15 @@ function classify(raw: unknown): Cell {
 /** Pulls an employee ID out of "001", "EMP-12", "001 - Ana Cruz", "Ana Cruz (001)". */
 export function extractId(raw: string): string | null {
   const s = raw.trim();
-  if (!s || splitDate(s) || s.includes(":")) return null;
+  if (!s) return null;
   const ID = "[A-Za-z]{0,4}-?\\d[\\w-]*";
+  // "Ana Cruz ID: 5" / "Ana No. 12" — an explicit label inside a name wins.
+  const lab = s.match(new RegExp(`(?:\\bID|\\bNo\\.?)\\s*[:#]?\\s*(${ID})(?![\\w:])`, "i"));
+  if (lab && /[A-Za-z]/.test(s.replace(/\b(?:ID|No)\b/gi, ""))) return lab[1]!;
+  // Names ending with "(5)": take the LAST parenthesized/bracketed ID.
+  const paren = [...s.matchAll(new RegExp(`[(\\[]\\s*(${ID})\\s*[)\\]]`, "g"))].at(-1);
+  if (paren && /[A-Za-z]/.test(s.slice(0, paren.index))) return paren[1]!;
+  if (splitDate(s) || s.includes(":")) return null;
   let m = s.match(new RegExp(`^(${ID})$`));
   if (m) return m[1]!;
   m = s.match(new RegExp(`^(${ID})\\s*[-–:|,]?\\s+[A-Za-z]`));
@@ -308,6 +315,83 @@ function matrixPunches(grid: Cell[][], raw: string[][], fmt: DateFormat): RawPun
   return out.length ? out : null;
 }
 
+const INOUT = /^(?:clock|check|time|punch)?\s*[-_ ]?\s*(in|out)\s*\.?\s*\d*$/i;
+const TC_SKIP = /\b(?:work\s*time|daily\s*total|total|note|pay\s*period|summary)\b/i;
+
+/** Employee label row: "Employee" | "Sunny Gutierrez (5)", inline "Name: Ana (5)", or an ID label. */
+function employeeBlockId(row: string[]): string | null {
+  for (let c = 0; c < row.length; c++) {
+    const t = (row[c] ?? "").trim();
+    const m = t.match(/^(?:employee|emp|name)\s*(?:name)?\s*[:：]?\s*([\s\S]*)$/i);
+    if (!m) continue;
+    const inline = m[1]?.trim();
+    const id = inline ? extractId(inline) : null;
+    if (id) return id;
+    const right = row.slice(c + 1).filter((v) => v.trim());
+    for (const v of right) { const found = extractId(v); if (found) return found; }
+  }
+  return labeledId(row);
+}
+
+/** Timecard: employee blocks, a header with In/Out columns, date carried down, one IN/OUT pair per row. */
+function timecardPunches(raw: string[][], fmt: DateFormat): RawPunch[] | null {
+  const out: RawPunch[] = [];
+  let id = "", block = 0, sawBlock = false;
+  let pairs: { inCol: number; outCol: number }[] | null = null;
+  let dateCol = -1, date = "", dateRow = -1, pairIdx = 0, stray = false;
+  const period = reportPeriod(raw, raw.length, fmt);
+  for (let r = 0; r < raw.length; r++) {
+    const row = raw[r] ?? [];
+    const cells = row.map((c) => String(c ?? "").trim());
+    const timesHere = cells.some((c) => extractCellTimes(c).length);
+    const bid = timesHere ? null : employeeBlockId(cells);
+    if (bid) { id = bid; block++; sawBlock = true; pairs = null; continue; }
+    const io = cells.map((c, i) => ({ i, m: c.match(INOUT)?.[1]?.toLowerCase() })).filter((x) => x.m);
+    if (!timesHere && io.length >= 2) {
+      const list: { inCol: number; outCol: number }[] = [];
+      io.forEach((x, k) => { if (x.m === "in") { const o = io.slice(k + 1).find((y) => y.m === "out"); if (o) list.push({ inCol: x.i, outCol: o.i }); } });
+      if (list.length) { pairs = list; dateCol = cells.findIndex((c) => /^(?:date|day)$/i.test(c)); date = ""; continue; }
+    }
+    if (!pairs) { if (timesHere) stray = true; continue; }
+    if (cells.some((c) => TC_SKIP.test(c) && !extractCellTimes(c).length)) continue;
+    const dc = dateCol >= 0 ? [dateCol] : cells.map((_, i) => i).filter((i) => !pairs!.some((p) => p.inCol === i || p.outCol === i));
+    for (const c of dc) {
+      const v = cells[c] ?? "";
+      if (!v || extractCellTimes(v).length) continue;
+      const d = tcDate(v, fmt, period);
+      if (d) { date = d; dateRow = r; pairIdx = 0; break; }
+    }
+    if (!timesHere) continue;
+    const rowSlots = pairs.length > 1 ? pairs.flatMap((_, k) => [k * 2, k * 2 + 1]) : [pairIdx * 2, pairIdx * 2 + 1];
+    pairs.forEach((p, k) => {
+      [p.inCol, p.outCol].forEach((col, side) => {
+        const idx = rowSlots[k * 2 + side]!;
+        extractCellTimes(cells[col] ?? "").forEach((time) => out.push({
+          id, date, time, source: date ? `r${dateRow}` : `r${r}`, block: id ? undefined : `t${block}`, ...(idx < 4 ? { slot: SLOTS[idx] } : {}),
+        }));
+      });
+    });
+    pairIdx++;
+  }
+  return sawBlock && out.length && !stray ? out : null;
+}
+
+function tcDate(v: string, fmt: DateFormat, period: { start: ParsedDate; end: ParsedDate | null } | null): string {
+  const sd = splitDate(v);
+  if (sd && parseDate(sd.date, fmt)) return sd.date;
+  const t = v.replace(WEEKDAY_RE, "").trim();
+  if (!period) return "";
+  let m = t.match(/^(\d{1,2})[-/](\d{1,2})(?:\s|$|\()/);
+  if (m) { const d = valid(period.start.y, +m[1]!, +m[2]!); return d ? `${d.y}-${d.m}-${d.d}` : ""; }
+  m = t.match(/^(\d{1,2})(?:\s|$|\()/);
+  if (m) {
+    const day = +m[1]!, mo = day < period.start.d ? period.start.m + 1 : period.start.m;
+    const d = valid(mo > 12 ? period.start.y + 1 : period.start.y, mo > 12 ? 1 : mo, day);
+    return d ? `${d.y}-${d.m}-${d.d}` : "";
+  }
+  return "";
+}
+
 /** Long (one punch per row) and wide (several time columns per row). */
 function rowPunches(grid: Cell[][], raw: string[][]): RawPunch[] {
   const data: number[] = [];
@@ -382,6 +466,8 @@ export function autoConvert(sheets: string[][][]): ConvertResult {
   const layouts = new Set<string>();
   grids.forEach((g, i) => {
     const tag = (ps: RawPunch[]) => ps.map((p) => ({ ...p, source: `s${i}${p.source}`, block: p.block ? `s${i}${p.block}` : undefined }));
+    const tc = timecardPunches(sheets[i] ?? [], fmt);
+    if (tc?.length) { punches.push(...tag(tc)); layouts.add("timecard"); return; }
     const mx = matrixPunches(g, sheets[i]!, fmt);
     if (mx?.length) { punches.push(...tag(mx)); layouts.add("matrix"); return; }
     const rp = rowPunches(g, sheets[i] ?? []);
@@ -475,3 +561,10 @@ export function toCsv(rows: OutRow[]): string {
 }
 
 export { isRange };
+
+/** Share of rows with at least one error; used for the self-check before showing results. */
+export function errorRate(rows: OutRow[]): number {
+  if (!rows.length) return 1;
+  return rows.filter((r) => validate(r, rows).some((i) => i.level === "error")).length / rows.length;
+}
+export const UNRELIABLE_MESSAGE = "We couldn't read this file reliably";
