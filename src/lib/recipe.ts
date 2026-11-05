@@ -3,10 +3,10 @@ import { autoConvert, extractCellTimes, extractId, groupPunches, inferDateFormat
 
 const col = z.number().int().min(0).max(255).nullable();
 export const sheetRecipeSchema = z.object({
-  sheet: z.number().int().min(0).max(63), layout: z.enum(["long", "wide", "block", "matrix", "ignore"]),
+  sheet: z.number().int().min(0).max(63), layout: z.enum(["long", "wide", "block", "matrix", "timecard", "ignore"]),
   headerRow: z.number().int().min(-1).max(1000), idColumn: col, idLabel: z.string().max(80).nullable(),
   dateColumn: col, dayHeaderRow: col, rangeRow: col, timeColumns: z.array(z.number().int().min(0).max(255)).max(256),
-  dateFormat: z.enum(["MM/DD/YYYY", "DD/MM/YYYY", "ISO", "excel"]), timeFormat: z.enum(["24h", "12h", "excel", "mixed"]),
+  dateFormat: z.enum(["MM/DD/YYYY", "DD/MM/YYYY", "ISO", "D-Mon-YY", "text", "excel"]), timeFormat: z.enum(["24h", "12h", "excel", "mixed"]),
   punchTypeColumn: col, punchMapping: z.array(z.object({ value: z.string().max(80), slot: z.enum(["IN", "OUT", "IN.1", "OUT.1"]) })).max(16),
 }).strict();
 export const recipeSchema = z.object({ format: z.string().min(1).max(100), confidence: z.number().min(0).max(1), sheets: z.array(sheetRecipeSchema).min(1).max(64) }).strict();
@@ -52,6 +52,10 @@ export function convertWithRecipe(sheets: string[][][], input: unknown): Convert
     const sheet = sheets[spec.sheet];
     if (!sheet) throw new Error("Recipe sheet not found");
     if (spec.layout === "ignore") continue;
+    if (spec.layout === "timecard") {
+      for (const row of autoConvert([sheet]).rows) for (const slot of ["IN", "OUT", "IN.1", "OUT.1"] as const) for (const time of extractCellTimes(row[slot])) punches.push({ id: row.systemId, date: parseDate(row.date, "MM/DD/YYYY"), time, source: `s${spec.sheet}:${row.key}`, block: row.key, slot });
+      continue;
+    }
     if (spec.layout === "block" || spec.layout === "matrix") {
       // Feed only the declared punch day columns into the established block/day resolver.
       const safe = sheet.map((row, i) => i <= spec.headerRow || i === spec.dayHeaderRow || i === spec.rangeRow || row.some((c) => /^(?:id|user id|emp no)\s*[:#.]?/i.test(c))
@@ -63,7 +67,7 @@ export function convertWithRecipe(sheets: string[][][], input: unknown): Convert
       }
       continue;
     }
-    let id = "";
+    let id = "", lastDate = "";
     const mapping = new Map(spec.punchMapping.map((p) => [p.value.toLowerCase(), p.slot]));
     const dataRows = sheet.slice(spec.headerRow + 1);
     const typed = spec.punchTypeColumn !== null && mapping.size > 0 && dataRows.filter((row) => spec.timeColumns.some((c) => extractCellTimes(row[c] ?? "").length))
@@ -78,9 +82,12 @@ export function convertWithRecipe(sheets: string[][][], input: unknown): Convert
       if (spec.idColumn !== null && row[spec.idColumn]?.trim()) {
         const found = extractId(row[spec.idColumn] ?? "");
         if (!found) continue; // repeated header or non-punch row
+        if (found !== id) lastDate = "";
         id = found;
       }
-      const rawDate = spec.dateColumn === null ? "" : row[spec.dateColumn] ?? "";
+      const cellDate = spec.dateColumn === null ? "" : (row[spec.dateColumn] ?? "").trim();
+      if (cellDate) lastDate = cellDate;
+      const rawDate = cellDate || lastDate;
       const date = spec.dateFormat === "excel" ? serialDate(rawDate) : parseDate(rawDate, spec.dateFormat === "DD/MM/YYYY" ? "DD/MM/YYYY" : "MM/DD/YYYY");
       for (const c of spec.timeColumns) {
         const raw = row[c] ?? "";
