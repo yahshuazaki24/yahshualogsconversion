@@ -30,7 +30,7 @@ function maskCell(value: string): string {
   if (/^\d+(?:\.\d+)?$/.test(s) || parseDate(s, "MM/DD/YYYY") || parseDate(s, "DD/MM/YYYY"))
     return s.replace(/[A-Za-z]+/g, (word) => /^(T|Z|AM|PM)$/i.test(word) ? word : "[masked]").slice(0, 512);
   if (extractCellTimes(s).length) return (s.match(/\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AP]M)?/gi) ?? []).join(" ").slice(0, 512);
-  const structural = /^(attendance record report|attendance|record|report|time card|daily time record|stat[- ]date|date|time|punch time|punch state|emp code|employee code|employee|emp|user id|system id|emp no\.?|name|in\d*|out\d*|time in|time out|time\d+|terminal|device|status|verify|check in|check out|total hours|schedule|shift|day|no\.?|id)$/i;
+  const structural = /^(attendance record report|attendance|record|report|time card|daily time record|stat[- ]date|date|time|punch time|punch state|emp code|employee code|employee|emp|user id|system id|emp no\.?|name|in\d*|out\d*|time in|time out|time\d+|terminal|device|status|verify|check in|check out|total hours|schedule|shift|day|no\.?|id|weekday|work ?time|daily total|total|note|pay period|timecard( report)?|department)$/i;
   if (structural.test(s)) return s;
   const dates = s.match(/\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2}[-/.]\d{4}/g);
   if (dates?.length) return `Report period: ${dates.join(" ~ ")}`;
