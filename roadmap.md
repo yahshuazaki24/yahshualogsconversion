@@ -1,4 +1,4 @@
-- [ ] Add bounded, name-masked AI recipe detection with validated local application and fallback.
-- [ ] Update repeat-tap and punch-type conversion/validation rules and tests.
-- [ ] Add combined searches/live counts and all/issues-only exports with confirmation.
-- [ ] Verify formats, live AI detection, and export flows.
+- [x] Add bounded, name-masked AI recipe detection with validated local application and fallback.
+- [x] Update repeat-tap and punch-type conversion/validation rules and tests.
+- [x] Add combined searches/live counts and all/issues-only exports with confirmation.
+- [x] Verify formats, live AI detection, and export flows.
