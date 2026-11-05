@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { autoConvert, toCsv, parseTime, formatTime, NoPunchError, NO_PUNCH_MESSAGE, SLOTS, validate, type OutRow } from "./converter";
+import { autoConvert, toCsv, parseTime, formatTime, NoPunchError, NO_PUNCH_MESSAGE, SLOTS, validate, extractId, errorRate, type OutRow } from "./converter";
 
 const simple = (rows: OutRow[]) => rows.map((r) => [r.date, r.systemId, r.IN, r.OUT, r["IN.1"], r["OUT.1"]]);
 const run = (...sheets: string[][][]) => simple(autoConvert(sheets).rows);
@@ -272,5 +272,53 @@ describe("auto conversion", () => {
     const edited = { ...row, IN: "17:00", OUT: "08:00" };
     expect(validate(edited, [edited, { ...edited, key: "copy" }])).toEqual([{ level: "warning", message: "OUT earlier than IN" }]);
     expect([edited.IN, edited.OUT]).toEqual(["17:00", "08:00"]);
+  });
+});
+
+describe("timecard blocks", () => {
+  const NGTECO = [
+    ["Timecard Report"], ["Pay Period", "2026-10-01 ~ 2026-10-16"],
+    ["Employee", "Sunny Gutierrez\n(5)", "", "Department", "Office"],
+    ["Date", "Weekday", "In", "Out", "Work Time", "Daily Total", "Note"],
+    ["2026-10-02", "Fri", "07:50", "12:02", "4:12", "8:21", ""],
+    ["", "", "12:54", "17:03", "4:09", "", ""],
+    ["2026-10-03", "Sat", "", "", "", "", ""],
+    ["2026-10-04", "Sun", "", "", "", "", ""],
+    ["2026-10-05", "Mon", "07:59", "11:59", "4:00", "7:59", ""],
+    ["", "", "12:55", "16:58", "4:03", "", ""],
+    ["2026-10-06", "Tue", "", "", "", "", ""], ["2026-10-07", "Wed", "", "", "", "", ""], ["2026-10-08", "Thu", "", "", "", "", ""],
+    ["Total", "", "", "", "16:24", "16:20", ""],
+  ];
+  it("NGTeco timecard -> ID 5, carried dates, pairs per row, empty days skipped", () => {
+    const { rows } = autoConvert([NGTECO]);
+    expect(simple(rows)).toEqual([
+      ["10/2/2026", "5", "07:50", "12:02", "12:54", "17:03"],
+      ["10/5/2026", "5", "07:59", "11:59", "12:55", "16:58"],
+    ]);
+    expect(rows.map((r) => validate(r, rows))).toEqual([[], []]);
+  });
+  it("a one-sided pair keeps its slot and is a missing punch", () => {
+    const sheet = NGTECO.map((r) => [...r]);
+    sheet[5]![3] = "";
+    const { rows } = autoConvert([sheet]);
+    expect([rows[0]!.IN, rows[0]!.OUT, rows[0]!["IN.1"], rows[0]!["OUT.1"]]).toEqual(["07:50", "12:02", "12:54", ""]);
+    expect(validate(rows[0]!, rows)).toEqual([{ level: "error", message: "Missing punch: incomplete IN/OUT." }]);
+  });
+  it("multiple employee blocks and the last parenthesized ID", () => {
+    const two = [...NGTECO, ["Employee", "Ana (Team 2) (77)"], ["Date", "In", "Out"], ["10/2/2026", "08:00", "17:00"]];
+    const { rows } = autoConvert([two]);
+    expect(new Set(rows.map((r) => r.systemId))).toEqual(new Set(["5", "77"]));
+  });
+  it("extracts IDs inside names", () => {
+    expect(extractId("Sunny Gutierrez\n(5)")).toBe("5");
+    expect(extractId("Ana [12]")).toBe("12");
+    expect(extractId("Ana Cruz ID: 33")).toBe("33");
+    expect(extractId("Ana No. 9")).toBe("9");
+    expect(extractId("001 - Ana")).toBe("001");
+  });
+  it("error rate drives the self-check", () => {
+    const { rows } = autoConvert([NGTECO]);
+    expect(errorRate(rows)).toBe(0);
+    expect(errorRate([{ ...rows[0]!, OUT: "" }, rows[1]!])).toBe(0.5);
   });
 });

@@ -16,7 +16,7 @@ import {
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import {
-  autoConvert, NoPunchError, newKey, normalizeTime, parseDate, formatDate, toCsv, validate,
+  autoConvert, errorRate, UNRELIABLE_MESSAGE, type ConvertResult, NoPunchError, newKey, normalizeTime, parseDate, formatDate, toCsv, validate,
   SLOTS, TEMPLATE_HEADERS, filterRows, exportSelection, type OutRow, type Issue,
 } from "@/lib/converter";
 import { cn } from "@/lib/utils";
@@ -46,6 +46,7 @@ function App() {
   const [problem, setProblem] = useState("");
   const [fileName, setFileName] = useState("");
   const [ambiguousDate, setAmbiguousDate] = useState(false);
+  const [unreliable, setUnreliable] = useState(false);
   const [rows, setRows] = useState<OutRow[]>([]);
   const [history, setHistory] = useState<OutRow[][]>([]);
 
@@ -55,22 +56,30 @@ function App() {
     try {
       const sheets = await readFile(file);
       const sample = makeSample(sheets);
-      let res;
+      let res: ConvertResult | undefined;
       let feedback: string | null = null;
       let runId: string | null = null;
+      // Self-check: more than 20% error rows triggers one re-detection with a failure summary.
       for (let attempt = 0; attempt < 2; attempt++) {
         const result = await detect({ data: { sample, feedback, runId } });
         runId = result.runId;
         if (result.error) { toast.error(result.error); break; }
         try {
           checkRecipeSample(sheets, result.recipe);
-          res = convertWithRecipe(sheets, result.recipe);
-          break;
+          const candidate = convertWithRecipe(sheets, result.recipe);
+          if (!res || errorRate(candidate.rows) < errorRate(res.rows)) res = candidate;
+          const rate = errorRate(candidate.rows);
+          if (rate <= 0.2) break;
+          feedback = `${Math.round(rate * 100)}% of ${candidate.rows.length} rows had errors (missing ID, date or punch). Re-check ID carry-down, date carry-down and pair columns.`;
         } catch (error) {
           feedback = error instanceof Error ? error.message : "Recipe failed sample validation";
         }
       }
-      res ??= autoConvert(sheets);
+      let local: ConvertResult | null = null;
+      try { local = autoConvert(sheets); } catch (e) { if (!res) throw e; }
+      if (local && (!res || errorRate(local.rows) < errorRate(res.rows))) res = local;
+      if (!res) throw new NoPunchError();
+      setUnreliable(errorRate(res.rows) > 0.2);
       setDetected(res.layout);
       setFileName(file.name);
       setRows(res.rows);
@@ -97,7 +106,7 @@ function App() {
         {step === 0 && <UploadStep onFile={onFile} busy={busy} problem={problem} />}
         {step === 1 && (
           <EditStep rows={rows} setRows={setRows} history={history} setHistory={setHistory} fileName={fileName}
-            ambiguousDate={ambiguousDate} detected={detected} onBack={() => setStep(0)} />
+            ambiguousDate={ambiguousDate} detected={detected} unreliable={unreliable} onBack={() => setStep(0)} />
         )}
       </div>
     </div>
@@ -189,9 +198,9 @@ function Stat({ label, value, tone }: { label: string; value: number; tone?: "er
   );
 }
 
-function EditStep({ rows, setRows, history, setHistory, fileName, ambiguousDate, detected, onBack }: {
+function EditStep({ rows, setRows, history, setHistory, fileName, ambiguousDate, detected, unreliable, onBack }: {
   rows: OutRow[]; setRows: (r: OutRow[]) => void; history: OutRow[][]; setHistory: (h: OutRow[][]) => void;
-  fileName: string; ambiguousDate: boolean; detected: string; onBack: () => void;
+  fileName: string; ambiguousDate: boolean; detected: string; unreliable: boolean; onBack: () => void;
 }) {
   const [issuesOnly, setIssuesOnly] = useState(false);
   const [idSearch, setIdSearch] = useState("");
@@ -227,7 +236,7 @@ function EditStep({ rows, setRows, history, setHistory, fileName, ambiguousDate,
 
   const cellCls = "h-8 rounded-lg border-transparent bg-transparent px-2 shadow-none hover:border-border focus-visible:border-primary";
 
-  const employees = new Set(visible.map((r) => r.systemId).filter(Boolean)).size;
+  const employees = new Set(rows.map((r) => r.systemId).filter(Boolean)).size;
 
   return (
     <div className="space-y-4">
@@ -235,6 +244,12 @@ function EditStep({ rows, setRows, history, setHistory, fileName, ambiguousDate,
         <FileSpreadsheet className="h-4 w-4 text-secondary" /> {fileName}
       </div>
       <p className="text-sm text-muted-foreground">Detected: {detected}</p>
+      {unreliable && (
+        <div role="alert" className="flex items-start gap-2 rounded-xl border border-warning/40 bg-warning/10 p-4 text-sm text-foreground">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+          {UNRELIABLE_MESSAGE}. Showing the best attempt — please review the flagged rows.
+        </div>
+      )}
       {ambiguousDate && (
         <div role="alert" className="flex items-start gap-2 rounded-xl border border-warning/40 bg-warning/10 p-4 text-sm text-foreground">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
