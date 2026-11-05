@@ -56,7 +56,7 @@ function App() {
     try {
       const sheets = await readFile(file);
       const sample = makeSample(sheets);
-      let res;
+      let res: ConvertResult | undefined;
       let feedback: string | null = null;
       let runId: string | null = null;
       // Self-check: more than 20% error rows triggers one re-detection with a failure summary.
@@ -244,6 +244,12 @@ function EditStep({ rows, setRows, history, setHistory, fileName, ambiguousDate,
         <FileSpreadsheet className="h-4 w-4 text-secondary" /> {fileName}
       </div>
       <p className="text-sm text-muted-foreground">Detected: {detected}</p>
+      {unreliable && (
+        <div role="alert" className="flex items-start gap-2 rounded-xl border border-warning/40 bg-warning/10 p-4 text-sm text-foreground">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+          {UNRELIABLE_MESSAGE}. Showing the best attempt — please review the flagged rows.
+        </div>
+      )}
       {ambiguousDate && (
         <div role="alert" className="flex items-start gap-2 rounded-xl border border-warning/40 bg-warning/10 p-4 text-sm text-foreground">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
