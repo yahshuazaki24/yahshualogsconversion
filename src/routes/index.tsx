@@ -16,7 +16,7 @@ import {
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import {
-  autoConvert, errorRate, UNRELIABLE_MESSAGE, type ConvertResult, NoPunchError, newKey, normalizeTime, parseDate, formatDate, toCsv, validate,
+  autoConvert, describeResult, errorRate, UNRELIABLE_MESSAGE, verifyConversion, type ConvertResult, NoPunchError, newKey, normalizeTime, parseDate, formatDate, toCsv, validate,
   SLOTS, TEMPLATE_HEADERS, filterRows, exportSelection, type OutRow, type Issue,
 } from "@/lib/converter";
 import { cn } from "@/lib/utils";
@@ -59,28 +59,38 @@ function App() {
       let res: ConvertResult | undefined;
       let feedback: string | null = null;
       let runId: string | null = null;
-      // Self-check: more than 20% error rows triggers one re-detection with a failure summary.
-      for (let attempt = 0; attempt < 2; attempt++) {
+      // Verification gate: failures and failing rows go back to the AI, up to 2 retries.
+      const score = (r: ConvertResult) => verifyConversion(r).length * 100 + errorRate(r.rows);
+      for (let attempt = 0; attempt < 3; attempt++) {
         const result = await detect({ data: { sample, feedback, runId } });
         runId = result.runId;
         if (result.error) { toast.error(result.error); break; }
         try {
           checkRecipeSample(sheets, result.recipe);
           const candidate = convertWithRecipe(sheets, result.recipe);
-          if (!res || errorRate(candidate.rows) < errorRate(res.rows)) res = candidate;
+          if (!res || score(candidate) < score(res)) res = candidate;
+          const failures = verifyConversion(candidate);
           const rate = errorRate(candidate.rows);
-          if (rate <= 0.2) break;
-          feedback = `${Math.round(rate * 100)}% of ${candidate.rows.length} rows had errors (missing ID, date or punch). Re-check ID carry-down, date carry-down and pair columns.`;
+          if (!failures.length && rate <= 0.2) break;
+          const failing = candidate.rows
+            .filter((r) => validate(r, candidate.rows).some((i) => i.level === "error"))
+            .slice(0, 5)
+            .map((r) => `${r.systemId || "?"} ${r.date || "?"} ${[r.IN, r.OUT, r["IN.1"], r["OUT.1"]].filter(Boolean).join(" ")}`);
+          feedback = [
+            ...failures.map((f) => f.detail),
+            ...(rate > 0.2 ? [`${Math.round(rate * 100)}% of ${candidate.rows.length} rows had errors (missing ID, date or punch). Re-check ID carry-down, date carry-down and pair columns.`] : []),
+            ...(failing.length ? [`Failing rows: ${failing.join(" | ")}`] : []),
+          ].join("\n");
         } catch (error) {
           feedback = error instanceof Error ? error.message : "Recipe failed sample validation";
         }
       }
       let local: ConvertResult | null = null;
       try { local = autoConvert(sheets); } catch (e) { if (!res) throw e; }
-      if (local && (!res || errorRate(local.rows) < errorRate(res.rows))) res = local;
+      if (local && (!res || score(local) < score(res))) res = local;
       if (!res) throw new NoPunchError();
-      setUnreliable(errorRate(res.rows) > 0.2);
-      setDetected(res.layout);
+      setUnreliable(verifyConversion(res).length > 0 || errorRate(res.rows) > 0.2);
+      setDetected(describeResult(res));
       setFileName(file.name);
       setRows(res.rows);
       setAmbiguousDate(res.ambiguousDate);
@@ -162,10 +172,10 @@ function UploadStep({ onFile, busy, problem }: { onFile: (f: File) => void; busy
         </span>
         <div>
           <p className="text-base font-semibold text-heading">Drag & drop your biometric log export</p>
-          <p className="mt-1 text-sm text-muted-foreground">or click to browse — XLS, XLSX, CSV, TXT or DAT</p>
+          <p className="mt-1 text-sm text-muted-foreground">or click to browse — XLS, XLSX, CSV, TXT, DAT, TSV or PDF</p>
         </div>
         <Button type="button" className="rounded-xl" disabled={busy}>Choose file</Button>
-        <input ref={input} type="file" accept=".csv,.xlsx,.xls,.txt,.dat" className="hidden"
+        <input ref={input} type="file" accept=".csv,.xlsx,.xls,.txt,.dat,.tsv,.pdf" className="hidden"
           onChange={(e) => { const f = e.target.files?.[0]; if (f) onFile(f); e.target.value = ""; }} />
       </div>
       {problem && (
