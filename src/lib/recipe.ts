@@ -59,6 +59,7 @@ export function convertWithRecipe(sheets: string[][][], input: unknown): Convert
   const recipe = recipeSchema.parse(input);
   if (recipe.confidence < 0.75) throw new Error("Low confidence");
   if (new Set(recipe.sheets.map((s) => s.sheet)).size !== sheets.length) throw new Error("Recipe must account for every sheet");
+  const inferred = inferDateFormat(sheets.flatMap((s) => s.flat()));
   const punches: ResolvedPunch[] = [];
   for (const spec of recipe.sheets) {
     const sheet = sheets[spec.sheet];
@@ -115,8 +116,8 @@ export function convertWithRecipe(sheets: string[][][], input: unknown): Convert
     }
   }
   if (!punches.length) throw new Error("Recipe found no punches");
-  const ambiguousDate = inferDateFormat(sheets.flatMap((s) => s.flat())).ambiguous;
-  return { rows: groupPunches(punches), ambiguousDate, layout: recipe.format };
+  const rows = groupPunches(punches);
+  return { rows, ambiguousDate: inferred.ambiguous, layout: recipe.format, stats: punchStats(punches.length, rows) };
 }
 
 export function checkRecipeSample(sheets: string[][][], recipe: unknown) {
