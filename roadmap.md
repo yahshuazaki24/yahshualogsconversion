@@ -2,3 +2,5 @@
 - [x] Update repeat-tap and punch-type conversion/validation rules and tests.
 - [x] Add combined searches/live counts and all/issues-only exports with confirmation.
 - [x] Verify formats, live AI detection, and export flows.
+- [x] Rebuild engine: verification gate with AI retries, device-column rejection, punch accounting, head/block/tail sampling, TSV/PDF input, readable detection line, merged-taps info.
+- [ ] Run the 4 reference-file regression tests with exact counts (needs the 4 reference files uploaded: NGTECO TC2 CSV, NGTeco K4 Timecard XLS, ZKTeco Attendance Record Report, schedule/shift-code report).

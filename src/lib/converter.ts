@@ -20,7 +20,13 @@ export interface OutRow {
   dupes: number; // exact duplicates removed
 }
 export interface Issue { level: "error" | "warning"; message: string }
-export interface ConvertResult { rows: OutRow[]; ambiguousDate: boolean; layout: string }
+export interface PunchStats { parsed: number; placed: number; extras: number; merged: number }
+export interface ConvertResult {
+  rows: OutRow[]; ambiguousDate: boolean; layout: string;
+  stats?: PunchStats;
+  period?: { start: ParsedDate; end: ParsedDate | null } | null;
+  idHeader?: string | null;
+}
 
 let seq = 0;
 export const newKey = () => `r${++seq}`;
@@ -153,7 +159,7 @@ function classify(raw: unknown): Cell {
 export function extractId(raw: string): string | null {
   const s = raw.trim();
   if (!s) return null;
-  const ID = "[A-Za-z]{0,4}-?\\d[\\w-]*";
+  const ID = "[A-Za-z]{0,8}-?\\d[\\w-]*";
   // "Ana Cruz ID: 5" / "Ana No. 12" — an explicit label inside a name wins.
   const lab = s.match(new RegExp(`(?:\\bID|\\bNo\\.?)\\s*[:#]?\\s*(${ID})(?![\\w:])`, "i"));
   if (lab && /[A-Za-z]/.test(s.replace(/\b(?:ID|No)\b/gi, ""))) return lab[1]!;
@@ -192,13 +198,18 @@ export function inferDateFormat(dates: string[]): { fmt: DateFormat; ambiguous: 
 interface RawPunch { id: string; date: string; time: number; source: string; block?: string | undefined; slot?: Slot }
 export interface ResolvedPunch extends Omit<RawPunch, "date"> { date: ParsedDate | null }
 const SKIP_HEADER = /(total|hours?|hrs|late|tardy|under ?time|over ?time|\bot\b|duration|work ?time|sched|shift|plan|expected|required|break ?hrs|absent|night ?diff)/i;
+/** A System ID must never come from one of these columns. */
+export const DEVICE_HEADER = /^(source|device|terminal|machine|serial|s\/?n|ip|location|verify( type)?|time ?zone|name|person name|department)$/i;
+const ID_HEADER = /^(person id|employee id|emp(loyee)?[ -]?code|user id|system id|id|no\.?|ac[- ]?no\.?|badge|emp(loyee)?[ -]?no\.?|pin|card([ -]?no\.?)?)$/i;
 const nonEmpty = (r: Cell[]) => r.filter((c) => c.k !== "empty").length;
 
-function pickIdCol(grid: Cell[][], rows: number[], exclude: Set<number>): number {
+function pickIdCol(grid: Cell[][], rows: number[], exclude: Set<number>, header?: string[]): number {
   const width = Math.max(0, ...rows.map((r) => grid[r]!.length));
   let best = -1, bestScore = 0.5;
   for (let c = 0; c < width; c++) {
     if (exclude.has(c)) continue;
+    const h = (header?.[c] ?? "").trim();
+    if (h && DEVICE_HEADER.test(h)) continue;
     const vals: string[] = [];
     let filled = 0;
     for (const r of rows) {
@@ -209,6 +220,7 @@ function pickIdCol(grid: Cell[][], rows: number[], exclude: Set<number>): number
     }
     // IDs may appear once per employee block, so score against filled cells only
     let score = filled ? vals.length / filled : 0;
+    if (h && ID_HEADER.test(h)) score += 2;
     // a row counter (1,2,3,...) is not an employee ID
     const nums = vals.map(Number);
     if (vals.length > 2 && nums.every((n, i) => i === 0 || n === nums[i - 1]! + 1)) score *= 0.3;
@@ -253,6 +265,18 @@ function reportPeriod(raw: string[][], header: number, fmt: DateFormat): { start
     const my = text.match(/\b([A-Za-z]{3,9})\.?\s+(\d{4})\b/);
     if (my?.[1] && my[2] && monthIdx(my[1]))
       return { start: { y: Number(my[2]), m: monthIdx(my[1]), d: 1 }, end: null };
+  }
+  return null;
+}
+
+/** The period stated by the file: only range/title rows near the top count, never data rows. */
+function sheetPeriod(raw: string[][], fmt: DateFormat): { start: ParsedDate; end: ParsedDate | null } | null {
+  for (let r = 0; r < Math.min(raw.length, 8); r++) {
+    const text = (raw[r] ?? []).join(" ");
+    const dates = (text.match(/\b\d{4}[-/.]\d{1,2}[-/.]\d{1,2}\b|\b\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}\b/g) ?? [])
+      .map((d) => parseDate(d, fmt)).filter((d): d is ParsedDate => d !== null);
+    if (dates.length >= 2) return { start: dates[0]!, end: dates[1]! };
+    if (dates.length === 1 && /pay\s*period|period|~|–|—|\bto\b/i.test(text)) return { start: dates[0]!, end: null };
   }
   return null;
 }
@@ -394,28 +418,31 @@ function tcDate(v: string, fmt: DateFormat, period: { start: ParsedDate; end: Pa
 }
 
 /** Long (one punch per row) and wide (several time columns per row). */
-function rowPunches(grid: Cell[][], raw: string[][]): RawPunch[] {
+function rowPunches(grid: Cell[][], raw: string[][]): { punches: RawPunch[]; idHeader: string | null } {
   const data: number[] = [];
   grid.forEach((r, i) => {
     if (nonEmpty(r) >= 2 && r.some((c) => c.k === "times" || c.k === "datetime")) data.push(i);
   });
-  if (!data.length) return [];
+  if (!data.length) return { punches: [], idHeader: null };
   // header = closest text row above the first data row; used only to skip summary columns
   const skip = new Set<number>();
+  let headerRow = -1;
   for (let h = data[0]! - 1; h >= 0; h--) {
     const r = grid[h]!;
     if (r.filter((c) => c.k === "other").length >= 2) {
       r.forEach((c, i) => { if (c.k === "other" && SKIP_HEADER.test(c.text)) skip.add(i); });
+      headerRow = h;
       break;
     }
   }
+  const header = headerRow >= 0 ? (raw[headerRow] ?? []).map((c) => String(c ?? "").trim()) : undefined;
   const width = Math.max(...data.map((r) => grid[r]!.length));
   let dateCol = -1, most = 0;
   for (let c = 0; c < width; c++) {
     const n = data.filter((r) => grid[r]![c]?.k === "date").length;
     if (n > most) { most = n; dateCol = c; }
   }
-  const idCol = pickIdCol(grid, data, new Set([dateCol, ...skip]));
+  const idCol = pickIdCol(grid, data, new Set([dateCol, ...skip]), header);
 
   // section-style reports: "Employee ID: 001  Ana Cruz" on a row above the punches
   const sectionId = new Map<number, string>();
@@ -453,7 +480,7 @@ function rowPunches(grid: Cell[][], raw: string[][]): RawPunch[] {
       if (c.k === "datetime") c.times.forEach((t) => out.push({ id, date: c.date, time: t, block, source: `r${r}c${i}` }));
     });
   }
-  return out;
+  return { punches: out, idHeader: idCol >= 0 && header ? header[idCol] || null : null };
 }
 
 /** Main entry: all sheets of a workbook (each a grid of cell texts) -> template rows. */
@@ -465,18 +492,84 @@ export function autoConvert(sheets: string[][][]): ConvertResult {
 
   const punches: RawPunch[] = [];
   const layouts = new Set<string>();
+  let period: { start: ParsedDate; end: ParsedDate | null } | null = null;
+  let idHeader: string | null = null;
   grids.forEach((g, i) => {
     const tag = (ps: RawPunch[]) => ps.map((p) => ({ ...p, source: `s${i}${p.source}`, block: p.block ? `s${i}${p.block}` : undefined }));
+    const p = sheetPeriod(sheets[i] ?? [], fmt);
+    if (p) period = !period ? p : {
+      start: cmpDate(period.start, p.start) <= 0 ? period.start : p.start,
+      end: period.end && p.end ? (cmpDate(period.end, p.end) >= 0 ? period.end : p.end) : period.end ?? p.end,
+    };
     const tc = timecardPunches(sheets[i] ?? [], fmt);
     if (tc?.length) { punches.push(...tag(tc)); layouts.add("timecard"); return; }
     const mx = matrixPunches(g, sheets[i]!, fmt);
     if (mx?.length) { punches.push(...tag(mx)); layouts.add("matrix"); return; }
     const rp = rowPunches(g, sheets[i] ?? []);
-    if (rp.length) { punches.push(...tag(rp)); layouts.add("rows"); }
+    if (rp.punches.length) { punches.push(...tag(rp.punches)); layouts.add("rows"); idHeader ??= rp.idHeader; }
   });
   if (!punches.length) throw new NoPunchError();
   const resolved: ResolvedPunch[] = punches.map((p) => ({ ...p, date: parseDate(p.date, fmt) }));
-  return { rows: groupPunches(resolved), ambiguousDate: ambiguous, layout: [...layouts].join("+") };
+  const rows = groupPunches(resolved);
+  return { rows, ambiguousDate: ambiguous, layout: [...layouts].join("+"), stats: punchStats(resolved.length, rows), period, idHeader };
+}
+
+const cmpDate = (a: ParsedDate, b: ParsedDate) => a.y - b.y || a.m - b.m || a.d - b.d;
+
+/** Every source punch must end up placed, listed as an extra, or merged as a duplicate tap. */
+export function punchStats(parsed: number, rows: OutRow[]): PunchStats {
+  let placed = 0, extras = 0, merged = 0;
+  for (const r of rows) {
+    placed += SLOTS.filter((s) => r[s].trim()).length;
+    extras += r.extra.length;
+    merged += r.dupes;
+  }
+  return { parsed, placed, extras, merged };
+}
+
+export interface VerifyFailure { check: string; detail: string }
+/** Gate that must pass before results are trusted; failures feed AI retries. */
+export function verifyConversion(result: ConvertResult): VerifyFailure[] {
+  const failures: VerifyFailure[] = [];
+  const blankId = result.rows.filter((r) => !r.systemId.trim());
+  if (blankId.length) failures.push({ check: "blank-id", detail: `${blankId.length} rows have no System ID (e.g. the row dated ${blankId[0]!.date || "?"})` });
+  const badDate = result.rows.filter((r) => !/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(r.date) || !parseDate(r.date, "MM/DD/YYYY"));
+  if (badDate.length) failures.push({ check: "blank-date", detail: `${badDate.length} rows have no resolved date (e.g. ID ${badDate[0]!.systemId || "?"})` });
+  const s = result.stats;
+  if (s && s.parsed !== s.placed + s.extras + s.merged)
+    failures.push({ check: "accounting", detail: `${s.parsed} source punches but only ${s.placed + s.extras + s.merged} accounted for` });
+  if (result.idHeader && DEVICE_HEADER.test(result.idHeader))
+    failures.push({ check: "device-id", detail: `System ID was taken from the "${result.idHeader}" column, which looks like a device column` });
+  const p = result.period;
+  if (p?.end) {
+    const outside = result.rows.filter((r) => {
+      const d = parseDate(r.date, "MM/DD/YYYY");
+      return d && (cmpDate(d, p.start) < 0 || cmpDate(d, p.end!) > 0);
+    });
+    if (outside.length) failures.push({ check: "period", detail: `${outside.length} rows fall outside the report period ${formatDate(p.start)} ~ ${formatDate(p.end!)}` });
+  }
+  return failures;
+}
+
+const LAYOUT_NAMES: Record<string, string> = {
+  timecard: "NGTeco Timecard Report",
+  matrix: "Block attendance report",
+  rows: "Punch log",
+};
+/** Readable one-liner: format · employees · date range. */
+export function describeResult(result: ConvertResult): string {
+  const name = result.layout.split("+").map((l) => LAYOUT_NAMES[l] ?? l).join(" + ");
+  const employees = new Set(result.rows.map((r) => r.systemId).filter(Boolean)).size;
+  const dates = result.rows.map((r) => parseDate(r.date, "MM/DD/YYYY")).filter((d): d is ParsedDate => d !== null).sort(cmpDate);
+  const range = dates.length ? ` · ${formatDate(dates[0]!)}–${formatDate(dates.at(-1)!)}` : "";
+  return `${name} · ${employees} employees${range}`;
+}
+
+/** Rows that start an employee block (an ID label or an Employee/Name label). */
+export function blockStartRows(sheet: string[][]): number[] {
+  const out: number[] = [];
+  sheet.forEach((row, i) => { if (labeledId(row) !== null || employeeBlockId(row) !== null) out.push(i); });
+  return out;
 }
 
 export function groupPunches(punches: ResolvedPunch[]): OutRow[] {

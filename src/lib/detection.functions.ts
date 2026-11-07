@@ -3,7 +3,7 @@ import { getRequest } from "@tanstack/react-start/server";
 import { z } from "zod";
 import { createResponsesCall } from "./ai/responses.server";
 
-const sampleSchema = z.array(z.object({ sheet: z.number().int().min(0).max(63), rows: z.array(z.object({ row: z.number().int().min(0), cells: z.array(z.string().max(512)).max(256) })).max(40) })).min(1).max(64);
+const sampleSchema = z.array(z.object({ sheet: z.number().int().min(0).max(63), rows: z.array(z.object({ row: z.number().int().min(0), cells: z.array(z.string().max(512)).max(256) })).max(100) })).min(1).max(64);
 export const detectFormat = createServerFn({ method: "POST" })
   .inputValidator(z.object({ sample: sampleSchema, feedback: z.string().max(500).nullable(), runId: z.string().max(200).nullable() }))
   .handler(async ({ data }) => {
