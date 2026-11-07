@@ -240,7 +240,7 @@ function EditStep({ rows, setRows, history, setHistory, fileName, ambiguousDate,
   };
   const onExport = (issues: boolean) => {
     setExportIssues(issues);
-    if (exportSelection(rows, issues).needsConfirmation) setConfirm(true);
+    if (unreliable || exportSelection(rows, issues).needsConfirmation) setConfirm(true);
     else download(issues);
   };
 
@@ -253,7 +253,10 @@ function EditStep({ rows, setRows, history, setHistory, fileName, ambiguousDate,
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
         <FileSpreadsheet className="h-4 w-4 text-secondary" /> {fileName}
       </div>
-      <p className="text-sm text-muted-foreground">Detected: {detected}</p>
+      <p className="text-sm text-muted-foreground">{detected}</p>
+      {rows.reduce((n, r) => n + r.dupes, 0) > 0 && (
+        <p className="text-sm text-muted-foreground">{rows.reduce((n, r) => n + r.dupes, 0)} duplicate taps merged</p>
+      )}
       {unreliable && (
         <div role="alert" className="flex items-start gap-2 rounded-xl border border-warning/40 bg-warning/10 p-4 text-sm text-foreground">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
