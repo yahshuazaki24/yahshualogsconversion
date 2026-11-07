@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { autoConvert, extractCellTimes, extractId, groupPunches, inferDateFormat, parseDate, type ConvertResult, type ResolvedPunch, type Slot } from "./converter";
+import { autoConvert, blockStartRows, extractCellTimes, extractId, groupPunches, inferDateFormat, parseDate, punchStats, type ConvertResult, type ResolvedPunch, type Slot } from "./converter";
 
 const col = z.number().int().min(0).max(255).nullable();
 export const sheetRecipeSchema = z.object({
@@ -13,11 +13,23 @@ export const recipeSchema = z.object({ format: z.string().min(1).max(100), confi
 export type ParsingRecipe = z.infer<typeof recipeSchema>;
 
 // Whitelist structural metadata; all unrecognized prose (including personal names) is redacted.
+// Sample = first 40 rows + 40 rows from the 2nd employee block + last 20 rows (bounded at 100).
 export function makeSample(sheets: string[][][]) {
-  return sheets.slice(0, 64).map((sheet, sheetIndex) => ({ sheet: sheetIndex,
-    rows: sheet.map((cells, row) => ({ row, cells })).filter(({ cells }) => cells.some((c) => c.trim())).slice(0, 40)
-      .map(({ row, cells }) => ({ row, cells: cells.slice(0, 256).map(maskCell) })),
-  }));
+  return sheets.slice(0, 64).map((sheet, sheetIndex) => {
+    const nonempty = sheet.map((cells, row) => ({ row, cells })).filter(({ cells }) => cells.some((c) => c.trim()));
+    const picked = new Map<number, string[]>();
+    const take = (entries: { row: number; cells: string[] }[]) => {
+      for (const e of entries) if (!picked.has(e.row) && picked.size < 100) picked.set(e.row, e.cells);
+    };
+    take(nonempty.slice(0, 40));
+    const second = blockStartRows(sheet)[1];
+    if (second !== undefined) take(nonempty.filter((e) => e.row >= second).slice(0, 40));
+    take(nonempty.slice(-20));
+    return { sheet: sheetIndex,
+      rows: [...picked.entries()].sort((a, b) => a[0] - b[0])
+        .map(([row, cells]) => ({ row, cells: cells.slice(0, 256).map(maskCell) })),
+    };
+  });
 }
 function maskCell(value: string): string {
   const s = value.trim();
@@ -88,7 +100,9 @@ export function convertWithRecipe(sheets: string[][][], input: unknown): Convert
       const cellDate = spec.dateColumn === null ? "" : (row[spec.dateColumn] ?? "").trim();
       if (cellDate) lastDate = cellDate;
       const rawDate = cellDate || lastDate;
-      const date = spec.dateFormat === "excel" ? serialDate(rawDate) : parseDate(rawDate, spec.dateFormat === "DD/MM/YYYY" ? "DD/MM/YYYY" : "MM/DD/YYYY");
+      // The date format comes from ALL values in the file when unambiguous, never just the sample.
+      const df = inferred.ambiguous ? (spec.dateFormat === "DD/MM/YYYY" ? "DD/MM/YYYY" : "MM/DD/YYYY") : inferred.fmt;
+      const date = spec.dateFormat === "excel" ? serialDate(rawDate) : parseDate(rawDate, df);
       for (const c of spec.timeColumns) {
         const raw = row[c] ?? "";
         let times = extractCellTimes(raw);
