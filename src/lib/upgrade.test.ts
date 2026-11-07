@@ -33,9 +33,11 @@ describe("payroll upgrade rules", () => {
     const warning = { ...rows[0], extra: ["19:00", "20:00"] } as typeof rows[number];
     expect(exportSelection([warning], false).warnings).toBe(1);
   });
-  it("bounds samples at 40 nonempty rows and masks names in separate/combined cells", () => {
-    const sample = makeSample([[["Emp Code", "Name", "Punch Time"], ...Array.from({ length: 60 }, () => ["001 Ana Cruz", "Ben Reyes", "2026-10-01 08:00"])]]);
-    expect(sample[0]?.rows).toHaveLength(40);
+  it("bounds samples at 100 rows (head + block + tail) and masks names in separate/combined cells", () => {
+    const sample = makeSample([[["Emp Code", "Name", "Punch Time"], ...Array.from({ length: 160 }, () => ["001 Ana Cruz", "Ben Reyes", "2026-10-01 08:00"])]]);
+    expect(sample[0]?.rows.length).toBeLessThanOrEqual(100);
+    expect(sample[0]?.rows[0]?.row).toBe(0);
+    expect(sample[0]?.rows.at(-1)?.row).toBe(160);
     expect(JSON.stringify(sample)).not.toMatch(/Ana|Cruz|Ben|Reyes/);
     expect(sample[0]?.rows[1]?.cells[0]).toBe("001 [masked]");
   });

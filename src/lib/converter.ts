@@ -159,7 +159,7 @@ function classify(raw: unknown): Cell {
 export function extractId(raw: string): string | null {
   const s = raw.trim();
   if (!s) return null;
-  const ID = "[A-Za-z]{0,4}-?\\d[\\w-]*";
+  const ID = "[A-Za-z]{0,8}-?\\d[\\w-]*";
   // "Ana Cruz ID: 5" / "Ana No. 12" — an explicit label inside a name wins.
   const lab = s.match(new RegExp(`(?:\\bID|\\bNo\\.?)\\s*[:#]?\\s*(${ID})(?![\\w:])`, "i"));
   if (lab && /[A-Za-z]/.test(s.replace(/\b(?:ID|No)\b/gi, ""))) return lab[1]!;
@@ -265,6 +265,18 @@ function reportPeriod(raw: string[][], header: number, fmt: DateFormat): { start
     const my = text.match(/\b([A-Za-z]{3,9})\.?\s+(\d{4})\b/);
     if (my?.[1] && my[2] && monthIdx(my[1]))
       return { start: { y: Number(my[2]), m: monthIdx(my[1]), d: 1 }, end: null };
+  }
+  return null;
+}
+
+/** The period stated by the file: only range/title rows near the top count, never data rows. */
+function sheetPeriod(raw: string[][], fmt: DateFormat): { start: ParsedDate; end: ParsedDate | null } | null {
+  for (let r = 0; r < Math.min(raw.length, 8); r++) {
+    const text = (raw[r] ?? []).join(" ");
+    const dates = (text.match(/\b\d{4}[-/.]\d{1,2}[-/.]\d{1,2}\b|\b\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}\b/g) ?? [])
+      .map((d) => parseDate(d, fmt)).filter((d): d is ParsedDate => d !== null);
+    if (dates.length >= 2) return { start: dates[0]!, end: dates[1]! };
+    if (dates.length === 1 && /pay\s*period|period|~|–|—|\bto\b/i.test(text)) return { start: dates[0]!, end: null };
   }
   return null;
 }
@@ -484,7 +496,7 @@ export function autoConvert(sheets: string[][][]): ConvertResult {
   let idHeader: string | null = null;
   grids.forEach((g, i) => {
     const tag = (ps: RawPunch[]) => ps.map((p) => ({ ...p, source: `s${i}${p.source}`, block: p.block ? `s${i}${p.block}` : undefined }));
-    const p = reportPeriod(sheets[i] ?? [], Math.min((sheets[i] ?? []).length, 8), fmt);
+    const p = sheetPeriod(sheets[i] ?? [], fmt);
     if (p) period = !period ? p : {
       start: cmpDate(period.start, p.start) <= 0 ? period.start : p.start,
       end: period.end && p.end ? (cmpDate(period.end, p.end) >= 0 ? period.end : p.end) : period.end ?? p.end,
