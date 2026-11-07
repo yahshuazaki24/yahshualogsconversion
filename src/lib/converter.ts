@@ -20,7 +20,13 @@ export interface OutRow {
   dupes: number; // exact duplicates removed
 }
 export interface Issue { level: "error" | "warning"; message: string }
-export interface ConvertResult { rows: OutRow[]; ambiguousDate: boolean; layout: string }
+export interface PunchStats { parsed: number; placed: number; extras: number; merged: number }
+export interface ConvertResult {
+  rows: OutRow[]; ambiguousDate: boolean; layout: string;
+  stats?: PunchStats;
+  period?: { start: ParsedDate; end: ParsedDate | null } | null;
+  idHeader?: string | null;
+}
 
 let seq = 0;
 export const newKey = () => `r${++seq}`;
@@ -192,13 +198,18 @@ export function inferDateFormat(dates: string[]): { fmt: DateFormat; ambiguous: 
 interface RawPunch { id: string; date: string; time: number; source: string; block?: string | undefined; slot?: Slot }
 export interface ResolvedPunch extends Omit<RawPunch, "date"> { date: ParsedDate | null }
 const SKIP_HEADER = /(total|hours?|hrs|late|tardy|under ?time|over ?time|\bot\b|duration|work ?time|sched|shift|plan|expected|required|break ?hrs|absent|night ?diff)/i;
+/** A System ID must never come from one of these columns. */
+export const DEVICE_HEADER = /^(source|device|terminal|machine|serial|s\/?n|ip|location|verify( type)?|time ?zone|name|person name|department)$/i;
+const ID_HEADER = /^(person id|employee id|emp(loyee)?[ -]?code|user id|system id|id|no\.?|ac[- ]?no\.?|badge|emp(loyee)?[ -]?no\.?|pin|card([ -]?no\.?)?)$/i;
 const nonEmpty = (r: Cell[]) => r.filter((c) => c.k !== "empty").length;
 
-function pickIdCol(grid: Cell[][], rows: number[], exclude: Set<number>): number {
+function pickIdCol(grid: Cell[][], rows: number[], exclude: Set<number>, header?: string[]): number {
   const width = Math.max(0, ...rows.map((r) => grid[r]!.length));
   let best = -1, bestScore = 0.5;
   for (let c = 0; c < width; c++) {
     if (exclude.has(c)) continue;
+    const h = (header?.[c] ?? "").trim();
+    if (h && DEVICE_HEADER.test(h)) continue;
     const vals: string[] = [];
     let filled = 0;
     for (const r of rows) {
@@ -209,6 +220,7 @@ function pickIdCol(grid: Cell[][], rows: number[], exclude: Set<number>): number
     }
     // IDs may appear once per employee block, so score against filled cells only
     let score = filled ? vals.length / filled : 0;
+    if (h && ID_HEADER.test(h)) score += 2;
     // a row counter (1,2,3,...) is not an employee ID
     const nums = vals.map(Number);
     if (vals.length > 2 && nums.every((n, i) => i === 0 || n === nums[i - 1]! + 1)) score *= 0.3;
@@ -394,28 +406,31 @@ function tcDate(v: string, fmt: DateFormat, period: { start: ParsedDate; end: Pa
 }
 
 /** Long (one punch per row) and wide (several time columns per row). */
-function rowPunches(grid: Cell[][], raw: string[][]): RawPunch[] {
+function rowPunches(grid: Cell[][], raw: string[][]): { punches: RawPunch[]; idHeader: string | null } {
   const data: number[] = [];
   grid.forEach((r, i) => {
     if (nonEmpty(r) >= 2 && r.some((c) => c.k === "times" || c.k === "datetime")) data.push(i);
   });
-  if (!data.length) return [];
+  if (!data.length) return { punches: [], idHeader: null };
   // header = closest text row above the first data row; used only to skip summary columns
   const skip = new Set<number>();
+  let headerRow = -1;
   for (let h = data[0]! - 1; h >= 0; h--) {
     const r = grid[h]!;
     if (r.filter((c) => c.k === "other").length >= 2) {
       r.forEach((c, i) => { if (c.k === "other" && SKIP_HEADER.test(c.text)) skip.add(i); });
+      headerRow = h;
       break;
     }
   }
+  const header = headerRow >= 0 ? (raw[headerRow] ?? []).map((c) => String(c ?? "").trim()) : undefined;
   const width = Math.max(...data.map((r) => grid[r]!.length));
   let dateCol = -1, most = 0;
   for (let c = 0; c < width; c++) {
     const n = data.filter((r) => grid[r]![c]?.k === "date").length;
     if (n > most) { most = n; dateCol = c; }
   }
-  const idCol = pickIdCol(grid, data, new Set([dateCol, ...skip]));
+  const idCol = pickIdCol(grid, data, new Set([dateCol, ...skip]), header);
 
   // section-style reports: "Employee ID: 001  Ana Cruz" on a row above the punches
   const sectionId = new Map<number, string>();
