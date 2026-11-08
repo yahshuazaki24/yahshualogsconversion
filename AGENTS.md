@@ -17,3 +17,4 @@
 - Parsing recipes are schema-validated in src/lib/recipe.ts and sample-tested before local application; server-only gateway helpers never generate payroll output.
 - Persist AI access-denial metadata in a service-only circuit breaker, never samples or payroll values; clear it only after access is restored.
 - Layout detectors run per sheet in order timecard → matrix/block → rows; timecard only claims a sheet when every punch row sits under an In/Out header inside an employee block, so other layouts are never stolen.
+- Every conversion result passes a verification gate (blank ID/date, punch accounting, device-column ID, period bounds); failures feed up to 2 AI retries and otherwise mark the file unreliable, forcing export confirmation.
