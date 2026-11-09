@@ -200,7 +200,7 @@ export function inferDateFormat(dates: string[]): { fmt: DateFormat; ambiguous: 
 }
 
 /* ---------- punch extraction ---------- */
-interface RawPunch { id: string; date: string; time: number; source: string; block?: string | undefined; slot?: Slot }
+interface RawPunch { id: string; date: string; time: number; source: string; block?: string | undefined; slot?: Slot; pairPosition?: number }
 export interface ResolvedPunch extends Omit<RawPunch, "date"> { date: ParsedDate | null }
 const SKIP_HEADER = /(total|hours?|hrs|late|tardy|under ?time|over ?time|\bot\b|duration|work ?time|sched|shift|plan|expected|required|break ?hrs|absent|night ?diff)/i;
 /** A System ID must never come from one of these columns. */
@@ -399,7 +399,7 @@ function timecardPunches(raw: string[][], fmt: DateFormat): RawPunch[] | null {
       [p.inCol, p.outCol].forEach((col, side) => {
         const idx = rowSlots[k * 2 + side]!;
         extractPunchTimes(cells[col] ?? "").forEach((time) => out.push({
-          id, date, time, source: date ? `r${dateRow}` : `r${r}`, block: id ? undefined : `t${block}`, ...(idx < 4 ? { slot: SLOTS[idx] } : {}),
+          id, date, time, source: date ? `r${dateRow}` : `r${r}`, block: id ? undefined : `t${block}`, pairPosition: idx, ...(idx < 4 ? { slot: SLOTS[idx] } : {}),
         }));
       });
     });
@@ -596,7 +596,10 @@ export function groupPunches(punches: ResolvedPunch[]): OutRow[] {
     const uniq: ResolvedPunch[] = [];
     for (const punch of sorted) {
       const previous = uniq.at(-1);
-      if (!previous || punch.time - previous.time > 2) uniq.push(punch);
+      // Explicit pairs are separate source positions, not repeat taps in a flat log.
+      if (punch.pairPosition !== undefined) {
+        if (!uniq.some((p) => p.pairPosition === punch.pairPosition && p.time === punch.time)) uniq.push(punch);
+      } else if (!previous || punch.time - previous.time > 2) uniq.push(punch);
     }
     const row: OutRow & { sortKey: string } = {
       key: newKey(), date: g.date, systemId: g.id, sortKey: g.sortKey,
@@ -604,6 +607,7 @@ export function groupPunches(punches: ResolvedPunch[]): OutRow[] {
     };
     const explicit = uniq.filter((p) => p.slot);
     const typed = explicit.length > 0 && new Set(explicit.map((p) => p.slot)).size === explicit.length;
+    uniq.sort((a, b) => a.pairPosition !== undefined && b.pairPosition !== undefined ? a.pairPosition - b.pairPosition : a.time - b.time);
     uniq.forEach((p, i) => {
       const slot = typed ? p.slot : SLOTS[i];
       if (slot) row[slot] = formatTime(p.time); else row.extra.push(formatTime(p.time));

@@ -59,6 +59,9 @@ export function convertWithRecipe(sheets: string[][][], input: unknown): Convert
   const recipe = recipeSchema.parse(input);
   if (recipe.confidence < 0.75) throw new Error("Low confidence");
   if (new Set(recipe.sheets.map((s) => s.sheet)).size !== sheets.length) throw new Error("Recipe must account for every sheet");
+  if (recipe.sheets.every((s) => s.layout === "timecard" || s.layout === "ignore")) {
+    return autoConvert(recipe.sheets.filter((s) => s.layout === "timecard").map((s) => sheets[s.sheet] ?? []));
+  }
   const inferred = inferDateFormat(sheets.flatMap((s) => s.flat()));
   const punches: ResolvedPunch[] = [];
   // Inner block/timecard conversions may already have merged duplicate taps; carry the counts.
@@ -73,7 +76,10 @@ export function convertWithRecipe(sheets: string[][][], input: unknown): Convert
     if (spec.layout === "timecard") {
       for (const row of autoConvert([sheet]).rows) {
         carryDupes(row.systemId, row.date, row.dupes);
-        for (const slot of ["IN", "OUT", "IN.1", "OUT.1"] as const) for (const time of extractCellTimes(row[slot])) punches.push({ id: row.systemId, date: parseDate(row.date, "MM/DD/YYYY"), time, source: `s${spec.sheet}:${row.key}`, block: row.key, slot });
+        for (const [position, value] of [row.IN, row.OUT, row["IN.1"], row["OUT.1"], ...row.extra].entries()) {
+          const slot = (["IN", "OUT", "IN.1", "OUT.1"] as const)[position];
+          for (const time of extractCellTimes(value)) punches.push({ id: row.systemId, date: parseDate(row.date, "MM/DD/YYYY"), time, source: `s${spec.sheet}:${row.key}`, block: row.key, pairPosition: position, ...(slot ? { slot } : {}) });
+        }
       }
       continue;
     }
