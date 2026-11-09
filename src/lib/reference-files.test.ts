@@ -8,7 +8,7 @@ import { convertWithRecipe } from "./recipe";
 const csv = readFileSync("src/lib/__fixtures__/ngteco-tc2.csv", "utf8");
 const book = readFileSync("src/lib/__fixtures__/ngteco-k4.xls");
 const flatSheets = readTextSheets(csv);
-const cardSheets = readWorkbookSheets(book.buffer.slice(book.byteOffset, book.byteOffset + book.byteLength));
+const cardSheets = readWorkbookSheets(new Uint8Array(book).buffer);
 const flat = autoConvert(flatSheets);
 const card = autoConvert(cardSheets);
 const flatCounts = exportSelection(flat.rows, false);
