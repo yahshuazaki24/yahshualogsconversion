@@ -76,9 +76,12 @@ export function convertWithRecipe(sheets: string[][][], input: unknown): Convert
     if (spec.layout === "timecard") {
       for (const row of autoConvert([sheet]).rows) {
         carryDupes(row.systemId, row.date, row.dupes);
-        for (const [position, value] of [row.IN, row.OUT, row["IN.1"], row["OUT.1"], ...row.extra].entries()) {
-          const slot = (["IN", "OUT", "IN.1", "OUT.1"] as const)[position];
-          for (const time of extractCellTimes(value)) punches.push({ id: row.systemId, date: parseDate(row.date, "MM/DD/YYYY"), time, source: `s${spec.sheet}:${row.key}`, block: row.key, pairPosition: position, ...(slot ? { slot } : {}) });
+        const sourcePunches = row.neutral?.punches ?? [];
+        for (const [position, punch] of sourcePunches.entries()) {
+          const value = punch.time;
+          const pairPosition = punch.pair === undefined ? position : punch.pair * 2 + (punch.side === "out" ? 1 : 0);
+          const slot = (["IN", "OUT", "IN.1", "OUT.1"] as const)[pairPosition];
+          for (const time of extractCellTimes(value)) punches.push({ id: row.systemId, date: parseDate(row.date, "MM/DD/YYYY"), time, source: `s${spec.sheet}:${row.key}`, block: row.key, pairPosition, ...(slot ? { slot } : {}) });
         }
       }
       continue;

@@ -20,14 +20,19 @@ import {
   SLOTS, TEMPLATE_HEADERS, filterRows, exportSelection, type OutRow, type Issue,
 } from "@/lib/converter";
 import { cn } from "@/lib/utils";
+import { formatOne, gridToOne, oneToGrid, ONE_HEADERS, SOURCES, oneSelection, oneCsv, oneZip, oneFilename } from "@/lib/one-payroll";
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
+
+type Template = "online" | "one";
+const TEMPLATE_NAMES = { online: "YAHSHUA Payroll Online", one: "YAHSHUA One Payroll" };
 
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "YAHSHUA Payroll Online Logs Converter" },
-      { name: "description", content: "Upload a biometric log export and convert it to the payroll Daily Logs CSV — all in your browser." },
-      { property: "og:title", content: "YAHSHUA Payroll Online Logs Converter" },
-      { property: "og:description", content: "Convert biometric logs to the payroll Daily Logs template in your browser." },
+      { title: "YAHSHUA Daily Logs Conversion" },
+      { name: "description", content: "Convert biometric logs to YAHSHUA Payroll Online or YAHSHUA One daily logs in your browser." },
+      { property: "og:title", content: "YAHSHUA Daily Logs Conversion" },
+      { property: "og:description", content: "Convert biometric logs to Payroll Online or One Payroll daily logs." },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
     ],
@@ -49,6 +54,19 @@ function App() {
   const [unreliable, setUnreliable] = useState(false);
   const [rows, setRows] = useState<OutRow[]>([]);
   const [history, setHistory] = useState<OutRow[][]>([]);
+  const [template, setTemplate] = useState<Template | null>(null);
+  const [choosing, setChoosing] = useState(true);
+  const [parsed, setParsed] = useState<OutRow[]>([]);
+  const [edited, setEdited] = useState(false);
+  const [pendingTemplate, setPendingTemplate] = useState<Template | null>(null);
+  const applyTemplate = (next: Template) => {
+    setTemplate(next); setChoosing(false); setEdited(false); setHistory([]);
+    if (parsed.length) setRows(next === "one" ? formatOne(parsed).map(oneToGrid) : parsed);
+    setPendingTemplate(null);
+  };
+  const chooseTemplate = (next: Template) => {
+    if (edited) setPendingTemplate(next); else applyTemplate(next);
+  };
 
   const onFile = async (file: File) => {
     setBusy(true);
@@ -92,7 +110,9 @@ function App() {
       setUnreliable(verifyConversion(res).length > 0 || errorRate(res.rows) > 0.2);
       setDetected(describeResult(res));
       setFileName(file.name);
-      setRows(res.rows);
+      setParsed(res.rows);
+      setRows(template === "one" ? formatOne(res.rows).map(oneToGrid) : res.rows);
+      setEdited(false);
       setAmbiguousDate(res.ambiguousDate);
       setHistory([]);
       setStep(1);
@@ -107,17 +127,21 @@ function App() {
     <div className="min-h-screen bg-background font-sans text-foreground">
       <div className="mx-auto max-w-6xl px-4 py-8 sm:py-12">
         <header className="mb-8 text-center">
-          <h1 className="text-2xl font-bold tracking-tight text-heading sm:text-3xl">YAHSHUA Payroll Online Logs Converter</h1>
+          <h1 className="text-2xl font-bold text-heading sm:text-3xl">YAHSHUA Daily Logs Conversion</h1>
           <p className="mt-2 text-sm text-muted-foreground">Only a small sample is analyzed for format detection. Full conversion happens in your browser.</p>
         </header>
 
+        {template && <div className="mb-6 flex items-center justify-center gap-2"><span className="rounded-md bg-accent px-3 py-1 text-sm font-medium text-primary">{TEMPLATE_NAMES[template]}</span><Button variant="link" disabled={busy} onClick={() => setChoosing(true)}>Change</Button></div>}
+        {choosing ? <div className="grid gap-4 sm:grid-cols-2">{(["online", "one"] as const).map((t) => <Button key={t} variant="outline" className="h-36 whitespace-normal rounded-lg text-lg text-heading" onClick={() => chooseTemplate(t)}><FileSpreadsheet className="h-6 w-6 shrink-0 text-primary" />{TEMPLATE_NAMES[t]}</Button>)}</div> : <>
         <Stepper step={step} />
 
         {step === 0 && <UploadStep onFile={onFile} busy={busy} problem={problem} />}
         {step === 1 && (
-          <EditStep rows={rows} setRows={setRows} history={history} setHistory={setHistory} fileName={fileName}
+          <EditStep key={template} template={template ?? "online"} rows={rows} setRows={(next) => { setEdited(true); setRows(next); }} history={history} setHistory={setHistory} fileName={fileName}
             ambiguousDate={ambiguousDate} detected={detected} unreliable={unreliable} onBack={() => setStep(0)} />
         )}
+        </>}
+        <AlertDialog open={pendingTemplate !== null} onOpenChange={(open) => { if (!open) setPendingTemplate(null); }}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Discard manual edits?</AlertDialogTitle><AlertDialogDescription>Changing templates re-formats the original punches. Your manual edits will be discarded.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={() => { if (pendingTemplate) applyTemplate(pendingTemplate); }}>Change template</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
       </div>
     </div>
   );
@@ -208,7 +232,8 @@ function Stat({ label, value, tone }: { label: string; value: number; tone?: "er
   );
 }
 
-function EditStep({ rows, setRows, history, setHistory, fileName, ambiguousDate, detected, unreliable, onBack }: {
+function EditStep({ template, rows, setRows, history, setHistory, fileName, ambiguousDate, detected, unreliable, onBack }: {
+  template: Template;
   rows: OutRow[]; setRows: (r: OutRow[]) => void; history: OutRow[][]; setHistory: (h: OutRow[][]) => void;
   fileName: string; ambiguousDate: boolean; detected: string; unreliable: boolean; onBack: () => void;
 }) {
@@ -217,18 +242,35 @@ function EditStep({ rows, setRows, history, setHistory, fileName, ambiguousDate,
   const [dateSearch, setDateSearch] = useState("");
   const [exportIssues, setExportIssues] = useState(false);
   const [confirm, setConfirm] = useState(false);
+  const one = template === "one";
+  const [source, setSource] = useState("biometric");
+  const [maxRows, setMaxRows] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState({ employee_code: "", log_date: "", time_in: "", time_out: "" });
   const searched = useMemo(() => filterRows(rows, idSearch, dateSearch), [rows, idSearch, dateSearch]);
-  const { map } = useMemo(() => issueCounts(rows), [rows]);
-  const visible = filterRows(searched, "", "", issuesOnly);
-  const { errors, warnings } = issueCounts(visible);
-  const selection = exportSelection(rows, exportIssues);
+  const oneRows = useMemo(() => rows.map(gridToOne), [rows]);
+  const { map } = useMemo(() => one ? oneSelection(oneRows) : issueCounts(rows), [rows, oneRows, one]);
+  const visible = one ? searched.filter((r) => !issuesOnly || map.get(r.key)?.length) : filterRows(searched, "", "", issuesOnly);
+  const { errors, warnings } = one ? oneSelection(visible.map(gridToOne), false, oneRows) : issueCounts(visible);
+  const selection = one ? oneSelection(oneRows, exportIssues) : exportSelection(rows, exportIssues);
 
   const commit = (next: OutRow[]) => { setHistory([...history.slice(-49), rows]); setRows(next); };
   const update = (key: string, patch: Partial<OutRow>) => commit(rows.map((r) => (r.key === key ? { ...r, ...patch } : r)));
   const undo = () => { const prev = history.at(-1); if (prev) { setRows(prev); setHistory(history.slice(0, -1)); } };
-  const addRow = () => commit([...rows, { key: newKey(), date: "", systemId: "", IN: "", OUT: "", "IN.1": "", "OUT.1": "", extra: [], dupes: 0 }]);
+  const addRow = () => { if (one) { setAdding(true); return; } commit([...rows, { key: newKey(), date: "", systemId: "", IN: "", OUT: "", "IN.1": "", "OUT.1": "", extra: [], dupes: 0 }]); };
 
   const download = (issues = exportIssues) => {
+    if (one) {
+      try {
+        const selected = oneSelection(oneRows, issues).rows;
+        const name = oneFilename();
+        const content = maxRows.trim() ? oneZip(selected, Number(maxRows), name) : oneCsv(selected);
+        if (!selected.length) throw new Error("No rows to export");
+        const blob = typeof content === "string" ? new Blob([content], { type: "text/csv;charset=utf-8" }) : new Blob([new Uint8Array(content).buffer], { type: "application/zip" });
+        const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = maxRows.trim() ? name.replace(/\.csv$/, ".zip") : name; a.click(); URL.revokeObjectURL(a.href); toast.success("Daily logs exported");
+      } catch (e) { toast.error(e instanceof Error ? e.message : "Export failed"); }
+      return;
+    }
     const selected = exportSelection(rows, issues).rows;
     const blob = new Blob(["\ufeff" + toCsv(selected)], { type: "text/csv;charset=utf-8" });
     const a = document.createElement("a");
@@ -240,7 +282,7 @@ function EditStep({ rows, setRows, history, setHistory, fileName, ambiguousDate,
   };
   const onExport = (issues: boolean) => {
     setExportIssues(issues);
-    if (unreliable || exportSelection(rows, issues).needsConfirmation) setConfirm(true);
+    if (unreliable || (one ? oneSelection(oneRows, issues) : exportSelection(rows, issues)).needsConfirmation) setConfirm(true);
     else download(issues);
   };
 
@@ -278,7 +320,7 @@ function EditStep({ rows, setRows, history, setHistory, fileName, ambiguousDate,
       <div className={cn(card, "flex flex-wrap items-center gap-3 p-4")}>
         <div className="relative min-w-48 flex-1">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input aria-label="Search System ID" value={idSearch} onChange={(e) => setIdSearch(e.target.value)} placeholder="Search System ID" className="rounded-xl pl-9" />
+          <Input aria-label={one ? "Search Employee Code" : "Search System ID"} value={idSearch} onChange={(e) => setIdSearch(e.target.value)} placeholder={one ? "Search Employee Code" : "Search System ID"} className="rounded-xl pl-9" />
         </div>
         <div className="relative min-w-48 flex-1"><Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" /><Input aria-label="Search Date" value={dateSearch} onChange={(e) => setDateSearch(e.target.value)} placeholder="Search Date" className="rounded-xl pl-9" /></div>
         <div className="flex items-center gap-2">
@@ -289,13 +331,15 @@ function EditStep({ rows, setRows, history, setHistory, fileName, ambiguousDate,
         <Button variant="outline" size="sm" className="rounded-xl" onClick={addRow}><Plus className="h-4 w-4" /> Add row</Button>
       </div>
 
+      {one && <div className="flex flex-wrap items-end gap-4"><div className="w-48 space-y-2"><Label>Source</Label><Select value={source} onValueChange={(v) => { setSource(v); commit(rows.map((r) => ({ ...r, "IN.1": v }))); }}><SelectTrigger aria-label="Source for all rows"><SelectValue /></SelectTrigger><SelectContent>{SOURCES.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent></Select></div><div className="w-48 space-y-2"><Label htmlFor="max-rows">Max rows per file</Label><Input id="max-rows" type="number" min={1} step={1} value={maxRows} onChange={(e) => setMaxRows(e.target.value)} /></div></div>}
+
       <div className={cn(card, "overflow-hidden")}>
         <div className="max-h-[60vh] overflow-auto">
           <table className="w-full text-sm">
             <thead className="sticky top-0 z-10 bg-muted text-left text-xs text-muted-foreground">
               <tr>
                 <th className="w-8 px-2 py-2" />
-                {TEMPLATE_HEADERS.map((h) => <th key={h} className="whitespace-nowrap px-2 py-2 font-semibold text-heading">{h}</th>)}
+                {(one ? ONE_HEADERS : TEMPLATE_HEADERS).map((h) => <th key={h} className="whitespace-nowrap px-2 py-2 font-semibold text-heading">{h}</th>)}
                 <th className="px-2 py-2 font-medium">Issues</th>
                 <th className="w-10" />
               </tr>
@@ -309,16 +353,18 @@ function EditStep({ rows, setRows, history, setHistory, fileName, ambiguousDate,
                     <td className="px-2">
                       <span className={cn("block h-2 w-2 rounded-full", err ? "bg-destructive" : is.length ? "bg-warning" : "bg-success")} />
                     </td>
+                    {one && <td className="px-1 py-1"><CellInput className={cn(cellCls, "w-28")} value={r.systemId} onCommit={(v) => update(r.key, { systemId: v })} /></td>}
                     <td className="px-1 py-1">
                       <CellInput className={cn(cellCls, "w-28")} value={r.date} onCommit={(v) => {
+                        if (one) { update(r.key, { date: v }); return; }
                         const p = parseDate(v, "MM/DD/YYYY");
                         update(r.key, { date: p ? formatDate(p) : v });
                       }} />
                     </td>
-                    <td className="px-1 py-1"><CellInput className={cn(cellCls, "w-28")} value={r.systemId} onCommit={(v) => update(r.key, { systemId: v })} /></td>
+                    {!one && <td className="px-1 py-1"><CellInput className={cn(cellCls, "w-28")} value={r.systemId} onCommit={(v) => update(r.key, { systemId: v })} /></td>}
                     {SLOTS.map((s) => (
                       <td key={s} className="px-1 py-1">
-                        <CellInput className={cn(cellCls, "w-20 font-mono")} value={r[s]} placeholder="—" onCommit={(v) => update(r.key, { [s]: normalizeTime(v) })} />
+                        <CellInput className={cn(cellCls, one && (s === "IN.1" || s === "OUT.1") ? "w-28" : "w-20 font-mono")} value={r[s]} placeholder="—" onCommit={(v) => update(r.key, { [s]: one ? v : normalizeTime(v) })} />
                       </td>
                     ))}
                     <td className="px-2 py-1 text-xs">
@@ -342,6 +388,8 @@ function EditStep({ rows, setRows, history, setHistory, fileName, ambiguousDate,
         </div>
       </div>
 
+      {one && <p className="text-sm text-muted-foreground">Employee codes must already exist in YAHSHUA One. Check your file size and row limits.</p>}
+
       <div className="flex justify-between">
         <Button variant="ghost" className="rounded-xl" onClick={onBack}><ArrowLeft className="h-4 w-4" /> New file</Button>
         <DropdownMenu><DropdownMenuTrigger asChild><Button className="rounded-xl"><Download className="h-4 w-4" /> Export CSV</Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => onExport(false)}>Export all</DropdownMenuItem><DropdownMenuItem onSelect={() => onExport(true)}>Export issues only (errors + warnings)</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
@@ -351,7 +399,7 @@ function EditStep({ rows, setRows, history, setHistory, fileName, ambiguousDate,
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle className="text-heading">{selection.errors} errors and {selection.warnings} warnings remain. Export anyway?</AlertDialogTitle>
-            <AlertDialogDescription>Only the six template columns will be exported. Additional punches remain available for review.</AlertDialogDescription>
+            <AlertDialogDescription>{one ? "The selected rows will be exported in YAHSHUA One format." : "Only the six template columns will be exported. Additional punches remain available for review."}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
@@ -359,6 +407,7 @@ function EditStep({ rows, setRows, history, setHistory, fileName, ambiguousDate,
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      <AlertDialog open={adding} onOpenChange={setAdding}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Add daily log</AlertDialogTitle><AlertDialogDescription>Employee code, date, and at least one time are required.</AlertDialogDescription></AlertDialogHeader><div className="grid grid-cols-2 gap-4">{(["employee_code", "log_date", "time_in", "time_out"] as const).map((c) => <div key={c} className="space-y-2"><Label htmlFor={`add-${c}`}>{c}</Label><Input id={`add-${c}`} value={draft[c]} onChange={(e) => setDraft({ ...draft, [c]: e.target.value })} /></div>)}</div><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction disabled={!draft.employee_code.trim() || !draft.log_date.trim() || !(draft.time_in.trim() || draft.time_out.trim())} onClick={() => { commit([...rows, oneToGrid({ key: newKey(), ...draft, source, remarks: "" })]); setDraft({ employee_code: "", log_date: "", time_in: "", time_out: "" }); }}>Add row</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
     </div>
   );
 }

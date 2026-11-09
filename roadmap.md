@@ -5,3 +5,6 @@
 - [x] Rebuild engine: verification gate with AI retries, device-column rejection, punch accounting, head/block/tail sampling, TSV/PDF input, readable detection line, merged-taps info.
 - [x] Add and run real-file regression tests for the uploaded NGTECO TC2 CSV and NGTeco K4 Timecard XLS; fix demonstrated conversion defects and verify uploads/CSV exports with exact counts.
 - [ ] Run the remaining reference-file regressions (blocked until ZKTeco Attendance Record Report and schedule/shift-code report are uploaded).
+- [ ] Add neutral parsed-day retention, template switching, and YAHSHUA One formatter/validator without changing Online.
+- [ ] Reuse the editing/search/export flow for One; add source and whole-day ZIP splitting.
+- [ ] Verify both reference counts, exports, template changes, and existing regressions.

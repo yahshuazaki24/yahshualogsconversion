@@ -18,7 +18,9 @@ export interface OutRow {
   IN: string; OUT: string; "IN.1": string; "OUT.1": string;
   extra: string[]; // punches beyond four slots
   dupes: number; // exact duplicates removed
+  neutral?: ParsedDay;
 }
+export interface ParsedDay { employeeId: string; date: string; punches: { time: string; side?: "in" | "out"; pair?: number }[] }
 export interface Issue { level: "error" | "warning"; message: string }
 export interface PunchStats { parsed: number; placed: number; extras: number; merged: number }
 export interface ConvertResult {
@@ -608,6 +610,11 @@ export function groupPunches(punches: ResolvedPunch[]): OutRow[] {
     const explicit = uniq.filter((p) => p.slot);
     const typed = explicit.length > 0 && new Set(explicit.map((p) => p.slot)).size === explicit.length;
     uniq.sort((a, b) => a.pairPosition !== undefined && b.pairPosition !== undefined ? a.pairPosition - b.pairPosition : a.time - b.time);
+    row.neutral = { employeeId: g.id, date: g.date, punches: uniq.map((p) => ({
+      time: formatTime(p.time),
+      ...(p.pairPosition !== undefined ? { pair: Math.floor(p.pairPosition / 2), side: p.pairPosition % 2 === 0 ? "in" as const : "out" as const }
+        : p.slot ? { side: p.slot.startsWith("IN") ? "in" as const : "out" as const } : {}),
+    })) };
     uniq.forEach((p, i) => {
       const slot = typed ? p.slot : SLOTS[i];
       if (slot) row[slot] = formatTime(p.time); else row.extra.push(formatTime(p.time));
