@@ -5,8 +5,8 @@ import { readTextSheets, readWorkbookSheets } from "./file-reader";
 import { convertWithRecipe } from "./recipe";
 
 // Real uploaded files, with employee names masked; punch cells and IDs are unchanged.
-const csv = readFileSync(new URL("./__fixtures__/ngteco-tc2.csv", import.meta.url), "utf8");
-const book = readFileSync(new URL("./__fixtures__/ngteco-k4.xls", import.meta.url));
+const csv = readFileSync("src/lib/__fixtures__/ngteco-tc2.csv", "utf8");
+const book = readFileSync("src/lib/__fixtures__/ngteco-k4.xls");
 const flatSheets = readTextSheets(csv);
 const cardSheets = readWorkbookSheets(book.buffer.slice(book.byteOffset, book.byteOffset + book.byteLength));
 const flat = autoConvert(flatSheets);
