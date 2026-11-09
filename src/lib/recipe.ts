@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { autoConvert, blockStartRows, extractCellTimes, extractId, groupPunches, inferDateFormat, parseDate, punchStats, type ConvertResult, type ResolvedPunch, type Slot } from "./converter";
+import { autoConvert, blockStartRows, extractCellTimes, extractPunchTimes, extractId, groupPunches, inferDateFormat, parseDate, punchStats, type ConvertResult, type ResolvedPunch, type Slot } from "./converter";
 
 const col = z.number().int().min(0).max(255).nullable();
 export const sheetRecipeSchema = z.object({
@@ -59,6 +59,9 @@ export function convertWithRecipe(sheets: string[][][], input: unknown): Convert
   const recipe = recipeSchema.parse(input);
   if (recipe.confidence < 0.75) throw new Error("Low confidence");
   if (new Set(recipe.sheets.map((s) => s.sheet)).size !== sheets.length) throw new Error("Recipe must account for every sheet");
+  if (recipe.sheets.every((s) => s.layout === "timecard" || s.layout === "ignore")) {
+    return autoConvert(recipe.sheets.filter((s) => s.layout === "timecard").map((s) => sheets[s.sheet] ?? []));
+  }
   const inferred = inferDateFormat(sheets.flatMap((s) => s.flat()));
   const punches: ResolvedPunch[] = [];
   // Inner block/timecard conversions may already have merged duplicate taps; carry the counts.
@@ -73,7 +76,10 @@ export function convertWithRecipe(sheets: string[][][], input: unknown): Convert
     if (spec.layout === "timecard") {
       for (const row of autoConvert([sheet]).rows) {
         carryDupes(row.systemId, row.date, row.dupes);
-        for (const slot of ["IN", "OUT", "IN.1", "OUT.1"] as const) for (const time of extractCellTimes(row[slot])) punches.push({ id: row.systemId, date: parseDate(row.date, "MM/DD/YYYY"), time, source: `s${spec.sheet}:${row.key}`, block: row.key, slot });
+        for (const [position, value] of [row.IN, row.OUT, row["IN.1"], row["OUT.1"], ...row.extra].entries()) {
+          const slot = (["IN", "OUT", "IN.1", "OUT.1"] as const)[position];
+          for (const time of extractCellTimes(value)) punches.push({ id: row.systemId, date: parseDate(row.date, "MM/DD/YYYY"), time, source: `s${spec.sheet}:${row.key}`, block: row.key, pairPosition: position, ...(slot ? { slot } : {}) });
+        }
       }
       continue;
     }
@@ -115,7 +121,7 @@ export function convertWithRecipe(sheets: string[][][], input: unknown): Convert
       const date = spec.dateFormat === "excel" ? serialDate(rawDate) : parseDate(rawDate, df);
       for (const c of spec.timeColumns) {
         const raw = row[c] ?? "";
-        let times = extractCellTimes(raw);
+        let times = extractPunchTimes(raw);
         if (!times.length && spec.timeFormat === "excel" && raw.trim() && Number.isFinite(Number(raw))) {
           const n = Number(raw); if (n >= 0 && n < 100000) times = [Math.floor((n % 1) * 1440 + 0.00001)];
         }

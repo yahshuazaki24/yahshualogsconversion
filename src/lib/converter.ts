@@ -110,7 +110,7 @@ export function parseTime(raw: string): number | null {
 }
 
 export const formatTime = (m: number) =>
-  `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+  `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(Math.floor(m % 60)).padStart(2, "0")}`;
 
 export function normalizeTime(raw: string): string {
   if (!raw.trim()) return "";
@@ -122,12 +122,17 @@ const isRange = (s: string) => /\d{1,2}:\d{2}\s*(?:[AaPp]\.?[Mm]\.?)?\s*[-~â€“â€
 
 /** Matrix cells may contain annotations or concatenated punches, but not shift ranges. */
 export function extractCellTimes(raw: string): number[] {
+  return extractPunchTimes(raw).map(Math.floor);
+}
+
+/** Keep seconds for repeat-tap comparisons; truncate only when writing HH:mm output. */
+export function extractPunchTimes(raw: string): number[] {
   if (isRange(raw)) return [];
   const out: number[] = [];
   for (const match of raw.matchAll(TIME_G)) {
     if (!match[1] || !match[2]) continue;
     const minute = toMinutes(Number(match[1]), Number(match[2]), match[4]);
-    if (minute !== null) out.push(minute);
+    if (minute !== null) out.push(minute + Number(match[3] ?? 0) / 60);
   }
   return out;
 }
@@ -147,11 +152,11 @@ function classify(raw: unknown): Cell {
   if (sd) {
     if (!sd.rest) return { k: "date", date: sd.date };
     const t = parseTimes(sd.rest);
-    if (t) return { k: "datetime", date: sd.date, times: t };
+    if (t) return { k: "datetime", date: sd.date, times: extractPunchTimes(sd.rest) };
     return { k: "other", text: s };
   }
   const t = parseTimes(s);
-  if (t) return { k: "times", times: t };
+  if (t) return { k: "times", times: extractPunchTimes(s) };
   return { k: "other", text: s };
 }
 
@@ -195,7 +200,7 @@ export function inferDateFormat(dates: string[]): { fmt: DateFormat; ambiguous: 
 }
 
 /* ---------- punch extraction ---------- */
-interface RawPunch { id: string; date: string; time: number; source: string; block?: string | undefined; slot?: Slot }
+interface RawPunch { id: string; date: string; time: number; source: string; block?: string | undefined; slot?: Slot; pairPosition?: number }
 export interface ResolvedPunch extends Omit<RawPunch, "date"> { date: ParsedDate | null }
 const SKIP_HEADER = /(total|hours?|hrs|late|tardy|under ?time|over ?time|\bot\b|duration|work ?time|sched|shift|plan|expected|required|break ?hrs|absent|night ?diff)/i;
 /** A System ID must never come from one of these columns. */
@@ -332,7 +337,7 @@ function matrixPunches(grid: Cell[][], raw: string[][], fmt: DateFormat): RawPun
     if (!rowId && !named) rowId = lastId;
     if (rowId) lastId = rowId; else if (named) lastId = "";
     for (const [c, date] of activeDates) {
-      const times = extractCellTimes(rawRow[c] ?? "");
+      const times = extractPunchTimes(rawRow[c] ?? "");
       times.forEach((time) => out.push({ id: rowId, date, time, block: rowId ? undefined : `m${block}-${h}`, source: `r${h}c${c}` }));
     }
   }
@@ -370,7 +375,7 @@ function timecardPunches(raw: string[][], fmt: DateFormat): RawPunch[] | null {
     const cells = row.map((c) => String(c ?? "").trim());
     const timesHere = cells.some((c) => extractCellTimes(c).length);
     const bid = timesHere ? null : employeeBlockId(cells);
-    if (bid) { id = bid; block++; sawBlock = true; pairs = null; continue; }
+    if (bid) { id = bid; block++; sawBlock = true; pairs = null; date = ""; dateRow = -1; pairIdx = 0; continue; }
     const io = cells.map((c, i) => ({ i, m: c.match(INOUT)?.[1]?.toLowerCase() })).filter((x) => x.m);
     if (!timesHere && io.length >= 2) {
       const list: { inCol: number; outCol: number }[] = [];
@@ -379,20 +384,22 @@ function timecardPunches(raw: string[][], fmt: DateFormat): RawPunch[] | null {
     }
     if (!pairs) { if (timesHere) stray = true; continue; }
     if (cells.some((c) => TC_SKIP.test(c) && !extractCellTimes(c).length)) continue;
-    const dc = dateCol >= 0 ? [dateCol] : cells.map((_, i) => i).filter((i) => !pairs!.some((p) => p.inCol === i || p.outCol === i));
+    // Merged Date headers may sit over the weekday column; locate the actual date by content.
+    const dc = cells.map((_, i) => i).filter((i) => !pairs?.some((p) => p.inCol === i || p.outCol === i));
+    if (dateCol >= 0) dc.sort((a, b) => Number(b === dateCol) - Number(a === dateCol));
     for (const c of dc) {
       const v = cells[c] ?? "";
       if (!v || extractCellTimes(v).length) continue;
       const d = tcDate(v, fmt, period);
       if (d) { date = d; dateRow = r; pairIdx = 0; break; }
     }
-    if (!timesHere) continue;
+    if (!pairs.some((p) => extractPunchTimes(cells[p.inCol] ?? "").length || extractPunchTimes(cells[p.outCol] ?? "").length)) continue;
     const rowSlots = pairs.length > 1 ? pairs.flatMap((_, k) => [k * 2, k * 2 + 1]) : [pairIdx * 2, pairIdx * 2 + 1];
     pairs.forEach((p, k) => {
       [p.inCol, p.outCol].forEach((col, side) => {
         const idx = rowSlots[k * 2 + side]!;
-        extractCellTimes(cells[col] ?? "").forEach((time) => out.push({
-          id, date, time, source: date ? `r${dateRow}` : `r${r}`, block: id ? undefined : `t${block}`, ...(idx < 4 ? { slot: SLOTS[idx] } : {}),
+        extractPunchTimes(cells[col] ?? "").forEach((time) => out.push({
+          id, date, time, source: date ? `r${dateRow}` : `r${r}`, block: id ? undefined : `t${block}`, pairPosition: idx, ...(idx < 4 ? { slot: SLOTS[idx] } : {}),
         }));
       });
     });
@@ -589,13 +596,18 @@ export function groupPunches(punches: ResolvedPunch[]): OutRow[] {
     const uniq: ResolvedPunch[] = [];
     for (const punch of sorted) {
       const previous = uniq.at(-1);
-      if (!previous || punch.time - previous.time > 2) uniq.push(punch);
+      // Explicit pairs are separate source positions, not repeat taps in a flat log.
+      if (punch.pairPosition !== undefined) {
+        if (!uniq.some((p) => p.pairPosition === punch.pairPosition && p.time === punch.time)) uniq.push(punch);
+      } else if (!previous || punch.time - previous.time > 2) uniq.push(punch);
     }
     const row: OutRow & { sortKey: string } = {
       key: newKey(), date: g.date, systemId: g.id, sortKey: g.sortKey,
       IN: "", OUT: "", "IN.1": "", "OUT.1": "", extra: [], dupes: sorted.length - uniq.length,
     };
-    const typed = uniq.every((p) => p.slot) && new Set(uniq.map((p) => p.slot)).size === uniq.length;
+    const explicit = uniq.filter((p) => p.slot);
+    const typed = explicit.length > 0 && new Set(explicit.map((p) => p.slot)).size === explicit.length;
+    uniq.sort((a, b) => a.pairPosition !== undefined && b.pairPosition !== undefined ? a.pairPosition - b.pairPosition : a.time - b.time);
     uniq.forEach((p, i) => {
       const slot = typed ? p.slot : SLOTS[i];
       if (slot) row[slot] = formatTime(p.time); else row.extra.push(formatTime(p.time));
