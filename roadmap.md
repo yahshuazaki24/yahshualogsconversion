@@ -3,5 +3,5 @@
 - [x] Add combined searches/live counts and all/issues-only exports with confirmation.
 - [x] Verify formats, live AI detection, and export flows.
 - [x] Rebuild engine: verification gate with AI retries, device-column rejection, punch accounting, head/block/tail sampling, TSV/PDF input, readable detection line, merged-taps info.
-- [ ] Add and run real-file regression tests for the uploaded NGTECO TC2 CSV and NGTeco K4 Timecard XLS; fix demonstrated conversion defects.
+- [x] Add and run real-file regression tests for the uploaded NGTECO TC2 CSV and NGTeco K4 Timecard XLS; fix demonstrated conversion defects and verify uploads/CSV exports with exact counts.
 - [ ] Run the remaining reference-file regressions (blocked until ZKTeco Attendance Record Report and schedule/shift-code report are uploaded).
