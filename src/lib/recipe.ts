@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { autoConvert, blockStartRows, extractCellTimes, extractId, groupPunches, inferDateFormat, parseDate, punchStats, type ConvertResult, type ResolvedPunch, type Slot } from "./converter";
+import { autoConvert, blockStartRows, extractCellTimes, extractPunchTimes, extractId, groupPunches, inferDateFormat, parseDate, punchStats, type ConvertResult, type ResolvedPunch, type Slot } from "./converter";
 
 const col = z.number().int().min(0).max(255).nullable();
 export const sheetRecipeSchema = z.object({
@@ -115,7 +115,7 @@ export function convertWithRecipe(sheets: string[][][], input: unknown): Convert
       const date = spec.dateFormat === "excel" ? serialDate(rawDate) : parseDate(rawDate, df);
       for (const c of spec.timeColumns) {
         const raw = row[c] ?? "";
-        let times = extractCellTimes(raw);
+        let times = extractPunchTimes(raw);
         if (!times.length && spec.timeFormat === "excel" && raw.trim() && Number.isFinite(Number(raw))) {
           const n = Number(raw); if (n >= 0 && n < 100000) times = [Math.floor((n % 1) * 1440 + 0.00001)];
         }
