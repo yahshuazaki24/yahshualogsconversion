@@ -5,6 +5,9 @@ export const ONE_HEADERS = ["employee_code", "log_date", "time_in", "time_out", 
 export type OneColumn = typeof ONE_HEADERS[number];
 export type OneRow = Record<OneColumn, string> & { key: string };
 export const SOURCES = ["biometric", "import", "manual"] as const;
+// Shared grid adapter: column positions are UI storage only, never payroll interpretation.
+export const oneToGrid = (r: OneRow): OutRow => ({ key: r.key, systemId: r.employee_code, date: r.log_date, IN: r.time_in, OUT: r.time_out, "IN.1": r.source, "OUT.1": r.remarks, extra: [], dupes: 0 });
+export const gridToOne = (r: OutRow): OneRow => ({ key: r.key, employee_code: r.systemId, log_date: r.date, time_in: r.IN, time_out: r.OUT, source: r["IN.1"], remarks: r["OUT.1"] });
 const dayKey = (r: OneRow) => JSON.stringify([r.employee_code, r.log_date || r.key]);
 const dateKey = (s: string) => { const d = parseDate(s, "MM/DD/YYYY"); return d ? d.y * 10000 + d.m * 100 + d.d : Infinity; };
 export const sortOne = (rows: OneRow[]) => [...rows].sort((a, b) => a.employee_code.localeCompare(b.employee_code, undefined, { numeric: true }) || dateKey(a.log_date) - dateKey(b.log_date) || a.time_in.localeCompare(b.time_in));
